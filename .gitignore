@@ -1,0 +1,6 @@
+*.png
+*.jpg
+/.idea
+/pred_data
+/data
+*.zip

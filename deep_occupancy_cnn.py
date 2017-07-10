@@ -1,3 +1,5 @@
+from __future__ import division #python 2 division
+
 import numpy as np
 import tensorflow as tf
 import load_data
@@ -107,20 +109,62 @@ def get_prediction(tf_input):
 
 
 def calculate_loss(tf_inputs,tf_labels):
-    tf_out = get_inference(tf_inputs,OUTPUT_SHAPES)
+    method = 'weighted'
 
-    tf_out_pos_mask = tf.cast(tf.equal(tf_labels,1),dtype=tf.float32)
-    tf_out_neg_mask = tf.cast(tf.equal(tf_labels,-1),dtype=tf.float32)*0.1
-    tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
-    #tf_out_mask = tf.cast(tf.not_equal(tf_labels,0),dtype=tf.float32)
-    loss = tf.reduce_mean(tf.reduce_sum(((tf_out-(tf_labels*tf_out_neg_mask))**2)*tf_out_mask,axis=[1,2,3]))
-    #loss = tf.reduce_mean(tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=tf_out,labels=tf_labels),axis=[1,2,3]))
-    return loss,tf_out_mask,tf_labels
+    if method == 'naive':
+        tf_out = get_inference(tf_inputs,OUTPUT_SHAPES)
+
+        tf_out_pos_mask = tf.cast(tf.equal(tf_labels,1),dtype=tf.float32)
+        tf_out_neg_mask = tf.cast(tf.equal(tf_labels,-1),dtype=tf.float32)
+        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+
+        loss = tf.reduce_mean(tf.reduce_sum(((tf_out-tf_labels)**2)*tf_out_mask,axis=[1,2,3]))
+
+    elif method == 'weighted':
+        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+
+        tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
+        tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.1  # TODO: 0.1 bias?
+        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+
+        loss = tf.reduce_mean(
+        tf.reduce_sum(((tf_out - (tf_labels * tf_out_neg_mask)) ** 2) * tf_out_mask, axis=[1, 2, 3])) #TODO: check - over all batches?
+
+    elif method == 'almost_tri_state':
+        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+
+        tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
+        tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.1 # TODO: 0.1 bias?
+        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+
+        loss = tf.reduce_mean(
+        tf.reduce_sum(( tf.squared_difference( tf.tanh(tf.multiply(tf.constant(100000.0), tf_out)) , (tf_labels * tf_out_neg_mask)) ) * tf_out_mask, axis=[1, 2, 3]))
+
+    elif method == 'equal_number_of_posneg_samples':
+        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+
+        tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
+        tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
+        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+
+        tf_n_pos = tf.count_nonzero(tf_out_pos_mask)
+        tf_n_neg = tf.count_nonzero(tf_out_neg_mask)
+
+        #TODO: to complete
+        if tf.greater(tf_n_pos, tf_n_neg):
+            tf.where(tf_out_pos_mask, 1) #rand choose min number of samples
+        else:
+            0
+
+        loss = tf.reduce_mean(
+        tf.reduce_sum(((tf_out - tf_labels) ** 2) * tf_out_mask, axis=[1, 2, 3]))
+
+    return loss, tf_out_mask, tf_labels
 
 
 def optimize_model(loss):
 
-    optimize = tf.train.MomentumOptimizer(learning_rate=0.0001,momentum=0.9).minimize(loss)
+    optimize = tf.train.MomentumOptimizer(learning_rate=0.0005, momentum=0.9).minimize(loss)
     return optimize
 
 
@@ -132,7 +176,7 @@ if __name__ == '__main__':
     global sess,graph
 
     file_count = 1300
-    data_folder = 'data'
+    data_folder = '/home/ransalu/PycharmProjects/simulator_lidar/outputs/DOM_v2/filled_cropped/xyz/'
 
     width = 60
     height = 30
@@ -141,21 +185,21 @@ if __name__ == '__main__':
 
     with sess.as_default() and graph.as_default():
         tf_inpts = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, channels], name='inputs')
-        tf_labls = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width,1], name='labels')
+        tf_labls = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, 1], name='labels')
         tf_test_inputs = tf.placeholder(dtype=tf.float32, shape=[1, height, width, channels], name='inputs')
         build_tensorflw_variables()
 
-        tf_loss,tf_mask,_ = calculate_loss(tf_inpts, tf_labls)
+        tf_loss, tf_mask, _ = calculate_loss(tf_inpts, tf_labls)
         tf_optimize = optimize_model(tf_loss)
         tf_prediction = get_prediction(tf_test_inputs)
         tf.global_variables_initializer().run()
-        for epoch in range(50):
+        for epoch in range(5000):
             avg_loss = []
-            min,max = 1000,-1000
+            min, max = 1000, -1000
             for step in range(20):
-                inp1,lbl1 = load_data.load_batch_npz(data_folder,batch_size,height,width,channels,file_count)
+                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count)
                 #norm_inp1 = inp1[:,:,:,0]/
-                l,mask,labels,_= sess.run([tf_loss,tf_mask,tf_labls,tf_optimize],feed_dict={tf_inpts:inp1/300,tf_labls:lbl1})
+                l, mask, labels, _ = sess.run([tf_loss, tf_mask, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/300, tf_labls:lbl1})
                 avg_loss.append(l)
 
                 '''plt.figure(1)
@@ -177,38 +221,38 @@ if __name__ == '__main__':
                     min = np.min(inp1)
                 if np.max(inp1) > max:
                     max = np.max(inp1)
-            print(min)
-            print(max)
+            print('min, max', min, max)
+
             if (epoch+1)%1==0:
 
-                test_full_map = np.empty((test_height,test_width),dtype=np.float32)
+                xx, yy = np.meshgrid(np.arange(-299, 300, 2), np.arange(1, 300, 2))
+                test_full_map = -100 + np.zeros(xx.shape)
 
-                for r_i in range(test_height//height):
-                    for c_i in range(-test_width//(width*2),test_width//(width*2)):
-                        test_input = np.empty((1,30, 60, 2), dtype=np.float32)
-                        for rr_i in range(30):
-                            test_input[0,rr_i,:,0] = (np.ones((60),dtype=np.float32)*((r_i*30)+rr_i))/300.0
-                        for cc_i in range(60):
-                            test_input[0,:, cc_i, 0] = (np.ones((30),dtype=np.float32)*((c_i*60)+cc_i))/300.0
+                for col_no in range(0, 150, 30):
+                    for row_no in range(0, 300, 60):
 
-                        pred = sess.run(tf_prediction,feed_dict={tf_test_inputs:test_input})
-                        #print(test_input)
-                        #if r_i==0 and c_i==0:
-                            #print(pred)
-                        #sys.exit(1)
-                        #plt.close('all')
-                        #plt.imshow(pred[0, :, :, 0],cmap='jet',vmin=-1,vmax=1)
-                        #plt.colorbar()
-                        #plt.savefig(pred_data_dir+os.sep+'pred_sub_%d_%d_%d.png' % (epoch,r_i,c_i))
-                        im = img_as_uint(pred[0,:,:,0])
-                        io.imsave(pred_data_dir+os.sep+'pred_sub_%d_%d_%d.png' % (epoch,r_i,c_i),im)
-                        print(r_i,(c_i+(test_width//(width*2)))*60,(c_i+(test_width//(width*2))+1)*60)
-                        test_full_map[r_i*30:(r_i+1)*30,(c_i+(test_width//(width*2)))*60:(c_i+(test_width//(width*2))+1)*60] = pred[0,:,:,0]
+                        local_xx = xx[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
+                        local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
+                        test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
+
+                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/300})
+                        test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :, 0]
 
                 plt.close('all')
-                fig = plt.figure(epoch)
-                plt.imshow(test_full_map, cmap='jet', vmin=-1, vmax=1)
+                plt.figure(figsize=(12, 10))
+                plt.subplot(211)
+                plt.title('Occupancy $\in [elastic, elastic]$')
+                plt.scatter(xx.ravel(), yy.ravel(), c=test_full_map.ravel(), s=1, cmap='jet')
                 plt.colorbar()
+                plt.xlim([-300, 300]); plt.ylim([0, 300])
+                plt.axis('equal')
+                plt.subplot(212)
+                plt.title('Occupancy $\in [-1, 1]$')
+                plt.scatter(xx.ravel(), yy.ravel(), c=test_full_map.ravel(), s=1, cmap='jet', vmin=-1, vmax=1)
+                plt.colorbar()
+                plt.xlim([-300, 300]); plt.ylim([0, 300])
+                plt.axis('equal')
+                #plt.show()
                 plt.savefig(pred_data_dir+os.sep+'pred_%d.png'%(epoch+1))
 
             print('Loss Epoch (%d): %.5f'%(epoch,np.mean(avg_loss)))
