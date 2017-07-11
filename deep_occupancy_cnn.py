@@ -12,15 +12,15 @@ CONV_SCOPES = ['conv1','conv2','deconv2','deconv1']
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
-conv1kernel = 4
-conv2kernel = 4
+conv1kernel = 2
+conv2kernel = 2
 
-batch_size = 25
+batch_size = 2
 OUTPUT_TYPE = 'regression'
 if OUTPUT_TYPE == 'regression':
-    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,32],'conv2':[conv2kernel,conv2kernel,32,64],'deconv2':[conv2kernel,conv2kernel,32,64],'deconv1':[2,2,1,32]}
-    OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,32],'deconv1':[batch_size,30,60,1]}
-    TEST_OUTPUT_SHAPES = {'deconv2':[1,30, 60,32],'deconv1':[1,30,60,1]}
+    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[2,2,1,16]}
+    OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,16],'deconv1':[batch_size,30,60,1]}
+    TEST_OUTPUT_SHAPES = {'deconv2':[1,30, 60,16],'deconv1':[1,30,60,1]}
 elif OUTPUT_TYPE == 'classification':
     VAR_SHAPES = {'conv1': [3, 3, 2, 32], 'conv2': [3, 3, 32, 64], 'deconv2': [3, 3, 32, 64], 'deconv1': [1, 1, 3, 32]}
     OUTPUT_SHAPES = {'deconv2': [batch_size, 30, 60, 32], 'deconv1': [batch_size, 30, 60, 3]}
@@ -32,8 +32,8 @@ POOL_STRIDES = {'pool1':[1,2,2,1],'pool2':[1,3,3,1]}
 TF_WEIGHTS_SCOPE = 'weights'
 TF_BIAS_SCOPE = 'bias'
 TF_DECONV_SCOPE = 'deconv'
-ACTIVATION = 'lrelu'
-
+ACTIVATION = 'relu'
+beta = 0.00001
 
 graph = tf.get_default_graph()
 sess = tf.InteractiveSession(graph=graph)
@@ -44,6 +44,7 @@ def lrelu(x, leak=0.2, name="lrelu"):
         f1 = 0.5 * (1 + leak)
         f2 = 0.5 * (1 - leak)
         return f1 * x + f2 * abs(x)
+
 
 def activate(x,activation_type,name='activation'):
 
@@ -183,7 +184,7 @@ def calculate_loss_one_hot(tf_inputs,tf_labels):
 
 def calculate_loss(tf_inputs,tf_labels):
     method = 'weighted'
-
+    l2_decay = True
     if method == 'naive':
         tf_out = get_inference(tf_inputs,OUTPUT_SHAPES)
 
@@ -200,24 +201,28 @@ def calculate_loss(tf_inputs,tf_labels):
         tf_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
 
         tf_out_neg_rand_mask = tf.cast(
-            tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(), dtype=tf.float32), 0.0), dtype=tf.float32)
+            tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(), dtype=tf.float32), 1.0), dtype=tf.float32)
         tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask
 
-        tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 1.0
-        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask* 0.75  # TODO: 0.1 bias?
+        tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 0.95
+        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask * 0.95 # TODO: 0.1 bias?
 
-        tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*10.0 + \
+        tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*5.0 + \
                             tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
 
         tf_out_mask_for_logits = tf_pos_mask + tf_neg_mask
 
+
         loss = tf.reduce_mean(
             tf.reduce_sum(
-                (((tf_out * tf_out_mask_for_logits -
-                   tf_labels*(tf_pos_mask_weighted+tf_neg_mask_weighted))) ** 2) *
+                ((tf_out * tf_out_mask_for_logits -
+                   tf_labels*(tf_pos_mask_weighted+tf_neg_mask_weighted)) ** 2) *
                 tf_outer_pos_mask,
                 axis=[1, 2, 3])) #TODO: check - over all batches?
-
+        if l2_decay:
+            for si,scope in enumerate(CONV_SCOPES):
+                with tf.variable_scope(scope,reuse=True):
+                    loss = loss + beta * tf.reduce_sum(tf.get_variable(TF_WEIGHTS_SCOPE)**2)
 
     elif method == 'equal_number_of_posneg_samples':
         tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
@@ -233,15 +238,18 @@ def calculate_loss(tf_inputs,tf_labels):
 
 
 def optimize_model(loss,global_step):
-    learning_rate = tf.maximum(tf.train.exponential_decay(0.000001,global_step,10,0.9,staircase=True),1e-8)
+    learning_rate = tf.cond(global_step<20,lambda: tf.minimum(tf.train.exponential_decay(0.00001,global_step,2,1.01,staircase=True),1e-4),
+                            lambda: tf.maximum(tf.train.exponential_decay(0.00001,global_step,2,0.99,staircase=True),1e-7))
     optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,global_step)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
-    return optimize
+    return optimize,learning_rate
 
 
 test_width = 600
 test_height = 300
 pred_data_dir = 'pred_data'
+
+normalize_constant = 150
 
 if __name__ == '__main__':
     global sess,graph
@@ -271,15 +279,16 @@ if __name__ == '__main__':
         else:
             raise NotImplementedError
 
-        tf_optimize = optimize_model(tf_loss,global_step)
+        tf_optimize,tf_learning_rate = optimize_model(tf_loss,global_step)
 
         tf.global_variables_initializer().run()
         for epoch in range(1000):
             avg_loss = []
             for step in range(file_count//batch_size):
-                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count)
-
-                l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/150, tf_labls:lbl1})
+                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=False)
+                occupied_size  = np.where(lbl1==1)[0].size
+                #print('occupied ratio: ',occupied_size/lbl1.size)
+                l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
                 avg_loss.append(l)
                 #print(l)
 
@@ -295,7 +304,7 @@ if __name__ == '__main__':
                         local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
                         test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
 
-                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/150})
+                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/normalize_constant})
                         test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
 
                 plt.close('all')
@@ -316,3 +325,4 @@ if __name__ == '__main__':
                 plt.savefig(pred_data_dir+os.sep+'pred_%d.png'%(epoch+1))
 
             print('Loss Epoch (%d): %.5f'%(epoch,np.mean(avg_loss)))
+            print('Learning rate: ',sess.run(tf_learning_rate))
