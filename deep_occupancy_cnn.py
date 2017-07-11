@@ -12,14 +12,28 @@ CONV_SCOPES = ['conv1','conv2','deconv2','deconv1']
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
+conv1kernel = 4
+conv2kernel = 4
+
 batch_size = 25
-VAR_SHAPES = {'conv1': [3,3,2,32],'conv2':[3,3,32,64],'deconv2':[3,3,32,64],'deconv1':[3,3,1,32]}
-OUTPUT_SHAPES = {'deconv2':[batch_size,30,60,32],'deconv1':[batch_size,30,60,1]}
-TEST_OUTPUT_SHAPES = {'deconv2':[1,30,60,32],'deconv1':[1,30,60,1]}
+OUTPUT_TYPE = 'regression'
+if OUTPUT_TYPE == 'regression':
+    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,32],'conv2':[conv2kernel,conv2kernel,32,64],'deconv2':[conv2kernel,conv2kernel,32,64],'deconv1':[2,2,1,32]}
+    OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,32],'deconv1':[batch_size,30,60,1]}
+    TEST_OUTPUT_SHAPES = {'deconv2':[1,30, 60,32],'deconv1':[1,30,60,1]}
+elif OUTPUT_TYPE == 'classification':
+    VAR_SHAPES = {'conv1': [3, 3, 2, 32], 'conv2': [3, 3, 32, 64], 'deconv2': [3, 3, 32, 64], 'deconv1': [1, 1, 3, 32]}
+    OUTPUT_SHAPES = {'deconv2': [batch_size, 30, 60, 32], 'deconv1': [batch_size, 30, 60, 3]}
+    TEST_OUTPUT_SHAPES = {'deconv2': [1, 30, 60, 32], 'deconv1': [1, 30, 60, 3]}
+else:
+    raise NotImplementedError
+
 POOL_STRIDES = {'pool1':[1,2,2,1],'pool2':[1,3,3,1]}
 TF_WEIGHTS_SCOPE = 'weights'
 TF_BIAS_SCOPE = 'bias'
 TF_DECONV_SCOPE = 'deconv'
+ACTIVATION = 'lrelu'
+
 
 graph = tf.get_default_graph()
 sess = tf.InteractiveSession(graph=graph)
@@ -31,10 +45,21 @@ def lrelu(x, leak=0.2, name="lrelu"):
         f2 = 0.5 * (1 - leak)
         return f1 * x + f2 * abs(x)
 
+def activate(x,activation_type,name='activation'):
+
+    if activation_type=='tanh':
+        return tf.nn.tanh(x)
+    elif activation_type=='relu':
+        return tf.nn.relu(x)
+    elif activation_type=='lrelu':
+        return lrelu(x)
+    else:
+        raise NotImplementedError
+
+
 def build_tensorflw_variables():
     '''
-    Build the required tensorflow variables to populate the VGG-16 model
-    All are initialized with zeros (initialization doesn't matter in this case as we assign exact values later)
+    Build the required tensorflow variables to randomly initialize weights of the CNN
     :param variable_shapes: Shapes of the variables
     :return:
     '''
@@ -76,24 +101,34 @@ def get_inference(tf_inputs,OUTPUT_SHAPES):
                 weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
                 print('\t\tConvolution with ReLU activation for ', scope)
                 if si == 0:
-                    h = lrelu(
+                    print('\t\t\tInput shape ', tf_inputs.get_shape().as_list())
+                    h = activate(
                         tf.nn.conv2d(tf_inputs, weight, strides=[1,1,1,1], padding='SAME') + bias,
-                        name='hidden')
+                        activation_type=ACTIVATION, name='hidden')
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
                 else:
-                    h = lrelu(tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='SAME') + bias,
-                                   name='hidden')
+                    h = activate(tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='SAME') + bias,
+                                 activation_type=ACTIVATION, name='hidden')
+                    print('\t\t\tOutput shape: ', h.get_shape().as_list())
             if scope.startswith('deconv'):
                 weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
                 if si== len(CONV_SCOPES)-1:
-                    print('\t\tConvolution with TanH activation for ', scope)
-                    h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
-                    print('\t\t\tOutput shape: ', h.get_shape().as_list())
+                    if OUTPUT_TYPE == 'regression':
+                        print('\t\tConvolution with TanH activation for ', scope)
+
+                        h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
+                        print('\t\t\tOutput shape: ', h.get_shape().as_list())
+                    elif OUTPUT_TYPE == 'classification':
+                        print('\t\tConvolution with logits for ', scope)
+                        h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],
+                                                   strides=[1, 1, 1, 1], padding="SAME") + bias
+                        print('\t\t\tOutput shape: ', h.get_shape().as_list())
 
                 else:
                     print('\t\tConvolution with ReLU activation for ', scope)
-                    h = lrelu(tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias)
+                    h = activate(tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias,
+                                 activation_type=ACTIVATION)
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
 
             if 'pool' in scope:
@@ -103,9 +138,47 @@ def get_inference(tf_inputs,OUTPUT_SHAPES):
 
     return h
 
+
 def get_prediction(tf_input):
     tf_out = get_inference(tf_input,TEST_OUTPUT_SHAPES)
     return tf_out
+
+
+def get_predictions_with_ohe(tf_input):
+    if OUTPUT_TYPE != 'classification':
+        raise Exception
+    tf_out = get_inference(tf_input,TEST_OUTPUT_SHAPES)
+    tf_out_args = tf.argmax(tf.nn.softmax(tf_out),axis=3)
+    tf_out_args = tf.expand_dims(tf_out_args,axis=-1)-1
+    return tf_out_args
+
+
+def calculate_loss_one_hot(tf_inputs,tf_labels):
+    tf_labels = tf.cast(tf.squeeze(tf_labels),dtype=tf.int32)
+    tf_labels_ohe = tf.one_hot(tf_labels,3,1.0,0.0,axis=-1)
+
+    method = 'weighted'
+
+    if method == 'weighted':
+        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+        tf_pos_masks, tf_neg_masks = [],[]
+
+        tf_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 1.1
+        tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.9  # TODO: 0.1 bias?
+        tf_posneg_mask = tf_pos_mask + tf_neg_mask
+
+        tf_labels_shape = tf_labels_ohe.get_shape().as_list()
+        print(tf_labels_shape)
+        tf_out_reshaped = tf.reshape(tf_out,[tf_labels_shape[0],tf_labels_shape[1]*tf_labels_shape[2],tf_labels_shape[3]])
+        tf_posneg_reshaped = tf.reshape(tf_posneg_mask,[tf_labels_shape[0],tf_labels_shape[1]*tf_labels_shape[2],1])
+        tf_labels_reshaped = tf.reshape(tf_labels_ohe,[tf_labels_shape[0],tf_labels_shape[1]*tf_labels_shape[2],tf_labels_shape[3]])
+
+        loss = tf.reduce_mean(
+            tf.nn.softmax_cross_entropy_with_logits(labels=tf_labels_reshaped,logits=tf_out_reshaped)*tf.squeeze(tf_posneg_reshaped)
+        ) #TODO: check - over all batches?
+        return loss
+    else:
+        raise NotImplementedError
 
 
 def calculate_loss(tf_inputs,tf_labels):
@@ -120,51 +193,49 @@ def calculate_loss(tf_inputs,tf_labels):
 
         loss = tf.reduce_mean(tf.reduce_sum(((tf_out-tf_labels)**2)*tf_out_mask,axis=[1,2,3]))
 
+
     elif method == 'weighted':
         tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
 
-        tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
-        tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.1  # TODO: 0.1 bias?
-        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+        tf_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
+
+        tf_out_neg_rand_mask = tf.cast(
+            tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(), dtype=tf.float32), 0.0), dtype=tf.float32)
+        tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask
+
+        tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 1.0
+        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask* 0.75  # TODO: 0.1 bias?
+
+        tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*10.0 + \
+                            tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
+
+        tf_out_mask_for_logits = tf_pos_mask + tf_neg_mask
 
         loss = tf.reduce_mean(
-        tf.reduce_sum(((tf_out - (tf_labels * tf_out_neg_mask)) ** 2) * tf_out_mask, axis=[1, 2, 3])) #TODO: check - over all batches?
+            tf.reduce_sum(
+                (((tf_out * tf_out_mask_for_logits -
+                   tf_labels*(tf_pos_mask_weighted+tf_neg_mask_weighted))) ** 2) *
+                tf_outer_pos_mask,
+                axis=[1, 2, 3])) #TODO: check - over all batches?
 
-    elif method == 'almost_tri_state':
-        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
-
-        tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
-        tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.1 # TODO: 0.1 bias?
-        tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
-
-        loss = tf.reduce_mean(
-        tf.reduce_sum(( tf.squared_difference( tf.tanh(tf.multiply(tf.constant(100000.0), tf_out)) , (tf_labels * tf_out_neg_mask)) ) * tf_out_mask, axis=[1, 2, 3]))
 
     elif method == 'equal_number_of_posneg_samples':
         tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
 
         tf_out_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
         tf_out_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
+        tf_out_neg_rand_mask = tf.cast(tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(),dtype=tf.float32),0.0),dtype=tf.float32)
+        tf_out_neg_mask = tf_out_neg_mask*tf_out_neg_rand_mask
         tf_out_mask = tf_out_pos_mask + tf_out_neg_mask
+        loss = tf.reduce_mean(tf.reduce_sum(((tf_out - tf_labels) ** 2) , axis=[1, 2, 3]))
 
-        tf_n_pos = tf.count_nonzero(tf_out_pos_mask)
-        tf_n_neg = tf.count_nonzero(tf_out_neg_mask)
-
-        #TODO: to complete
-        if tf.greater(tf_n_pos, tf_n_neg):
-            tf.where(tf_out_pos_mask, 1) #rand choose min number of samples
-        else:
-            0
-
-        loss = tf.reduce_mean(
-        tf.reduce_sum(((tf_out - tf_labels) ** 2) * tf_out_mask, axis=[1, 2, 3]))
-
-    return loss, tf_out_mask, tf_labels
+    return loss
 
 
-def optimize_model(loss):
-
-    optimize = tf.train.MomentumOptimizer(learning_rate=0.0005, momentum=0.9).minimize(loss)
+def optimize_model(loss,global_step):
+    learning_rate = tf.maximum(tf.train.exponential_decay(0.000001,global_step,10,0.9,staircase=True),1e-8)
+    optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,global_step)
+    #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
     return optimize
 
 
@@ -176,7 +247,7 @@ if __name__ == '__main__':
     global sess,graph
 
     file_count = 1300
-    data_folder = '/home/ransalu/PycharmProjects/simulator_lidar/outputs/DOM_v2/filled_cropped/xyz/'
+    data_folder = 'data/'
 
     width = 60
     height = 30
@@ -186,42 +257,31 @@ if __name__ == '__main__':
     with sess.as_default() and graph.as_default():
         tf_inpts = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, channels], name='inputs')
         tf_labls = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, 1], name='labels')
+        global_step = tf.Variable(0,dtype=tf.int32,trainable=False)
         tf_test_inputs = tf.placeholder(dtype=tf.float32, shape=[1, height, width, channels], name='inputs')
         build_tensorflw_variables()
 
-        tf_loss, tf_mask, _ = calculate_loss(tf_inpts, tf_labls)
-        tf_optimize = optimize_model(tf_loss)
-        tf_prediction = get_prediction(tf_test_inputs)
+        if OUTPUT_TYPE=='classification':
+            tf_loss = calculate_loss_one_hot(tf_inpts,tf_labls)
+            tf_prediction = get_predictions_with_ohe(tf_test_inputs)
+
+        elif OUTPUT_TYPE=='regression':
+            tf_loss = calculate_loss(tf_inpts, tf_labls)
+            tf_prediction = get_prediction(tf_test_inputs)
+        else:
+            raise NotImplementedError
+
+        tf_optimize = optimize_model(tf_loss,global_step)
+
         tf.global_variables_initializer().run()
-        for epoch in range(5000):
+        for epoch in range(1000):
             avg_loss = []
-            min, max = 1000, -1000
-            for step in range(20):
+            for step in range(file_count//batch_size):
                 inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count)
-                #norm_inp1 = inp1[:,:,:,0]/
-                l, mask, labels, _ = sess.run([tf_loss, tf_mask, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/300, tf_labls:lbl1})
+
+                l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/150, tf_labls:lbl1})
                 avg_loss.append(l)
-
-                '''plt.figure(1)
-                plt.subplot(121)
-                plt.imshow(mask[0,:,:,0])
-
-                print(mask[0,:,:,0])
-                print('blah')
-                print(labels[0,:,:,0])
-
-                plt.subplot(122)
-                plt.imshow(labels[0,:,:,0])
-                plt.colorbar()
-                plt.savefig('test_labels.png')
-
-                sys.exit(1)'''
-
-                if np.min(inp1) < min:
-                    min = np.min(inp1)
-                if np.max(inp1) > max:
-                    max = np.max(inp1)
-            print('min, max', min, max)
+                #print(l)
 
             if (epoch+1)%1==0:
 
@@ -235,8 +295,8 @@ if __name__ == '__main__':
                         local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
                         test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
 
-                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/300})
-                        test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :, 0]
+                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/150})
+                        test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
 
                 plt.close('all')
                 plt.figure(figsize=(12, 10))

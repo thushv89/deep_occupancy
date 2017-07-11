@@ -4,3 +4,6 @@
 /pred_data
 /data
 *.zip
+*~
+*.pyc
+*.npz
