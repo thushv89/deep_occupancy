@@ -1,6 +1,6 @@
 import os
 import numpy as np
-import matplotlib
+import matplotlib.pyplot as plt
 
 
 files_read = 0
@@ -19,6 +19,19 @@ def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuff
         filename = data_folder + os.sep + 'res_2_img_%d.npz'%premutes[files_read]
         #print('loading file %s',filename)
         npzdata = np.load(filename)
+
+        # used this to visualize several occupancy labels
+        '''if 50<premutes[files_read]<80:
+            plt.close('all')
+            plt.figure(figsize=(12, 10))
+            plt.subplot(111)
+            plt.title('Occupancy $\in [elastic, elastic]$')
+            plt.imshow(npzdata['image_mat'], cmap='jet')
+            plt.colorbar()
+            plt.xlim([-300, 300]);
+            plt.ylim([0, 300])
+            plt.axis('equal')
+            plt.savefig('label_%d.png' % (premutes[files_read]))'''
 
         single_arr = np.reshape(npzdata['x_mat'],(height,width,1))
         single_arr = np.append(single_arr,np.reshape(npzdata['y_mat'],(height,width,1)),axis=2)

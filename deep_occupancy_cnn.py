@@ -32,8 +32,10 @@ POOL_STRIDES = {'pool1':[1,2,2,1],'pool2':[1,3,3,1]}
 TF_WEIGHTS_SCOPE = 'weights'
 TF_BIAS_SCOPE = 'bias'
 TF_DECONV_SCOPE = 'deconv'
-ACTIVATION = 'relu'
+ACTIVATION = 'lrelu'
 beta = 0.00001
+AUTO_DECREASE_LR = True
+ACCURACY_DROP_CAP = 3
 
 graph = tf.get_default_graph()
 sess = tf.InteractiveSession(graph=graph)
@@ -185,6 +187,7 @@ def calculate_loss_one_hot(tf_inputs,tf_labels):
 def calculate_loss(tf_inputs,tf_labels):
     method = 'weighted'
     l2_decay = True
+
     if method == 'naive':
         tf_out = get_inference(tf_inputs,OUTPUT_SHAPES)
 
@@ -194,24 +197,22 @@ def calculate_loss(tf_inputs,tf_labels):
 
         loss = tf.reduce_mean(tf.reduce_sum(((tf_out-tf_labels)**2)*tf_out_mask,axis=[1,2,3]))
 
-
     elif method == 'weighted':
         tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
 
         tf_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
 
-        tf_out_neg_rand_mask = tf.cast(
-            tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(), dtype=tf.float32), 1.0), dtype=tf.float32)
-        tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask
+        rand_mask = tf.cast(
+            tf.greater(tf.truncated_normal(tf_labels.get_shape().as_list(), dtype=tf.float32), 1.1), dtype=tf.float32)
+        tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * rand_mask
 
         tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 0.95
-        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * tf_out_neg_rand_mask * 0.95 # TODO: 0.1 bias?
+        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.95 * rand_mask
 
-        tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*5.0 + \
+        tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*10.0 + \
                             tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
 
         tf_out_mask_for_logits = tf_pos_mask + tf_neg_mask
-
 
         loss = tf.reduce_mean(
             tf.reduce_sum(
@@ -219,10 +220,11 @@ def calculate_loss(tf_inputs,tf_labels):
                    tf_labels*(tf_pos_mask_weighted+tf_neg_mask_weighted)) ** 2) *
                 tf_outer_pos_mask,
                 axis=[1, 2, 3])) #TODO: check - over all batches?
+
         if l2_decay:
             for si,scope in enumerate(CONV_SCOPES):
                 with tf.variable_scope(scope,reuse=True):
-                    loss = loss + beta * tf.reduce_sum(tf.get_variable(TF_WEIGHTS_SCOPE)**2)
+                    loss += beta * tf.reduce_sum(tf.get_variable(TF_WEIGHTS_SCOPE)**2)
 
     elif method == 'equal_number_of_posneg_samples':
         tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
@@ -238,12 +240,22 @@ def calculate_loss(tf_inputs,tf_labels):
 
 
 def optimize_model(loss,global_step):
-    learning_rate = tf.cond(global_step<20,lambda: tf.minimum(tf.train.exponential_decay(0.00001,global_step,2,1.01,staircase=True),1e-4),
-                            lambda: tf.maximum(tf.train.exponential_decay(0.00001,global_step,2,0.99,staircase=True),1e-7))
+    learning_rate = tf.cond(global_step<20,lambda: tf.minimum(tf.train.exponential_decay(0.00001,global_step,2*(file_count//batch_size),1.05,staircase=True),1e-4),
+                            lambda: tf.maximum(tf.train.exponential_decay(0.00001,global_step,2*(file_count//batch_size),0.95,staircase=True),1e-7))
     optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,global_step)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
     return optimize,learning_rate
 
+def optimize_model_auto_lr(loss,global_step):
+    learning_rate = tf.maximum(tf.train.exponential_decay(0.00001,global_step,1,0.9,staircase=True),1e-7)
+    optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
+    #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
+    return optimize,learning_rate
+
+
+def inc_gstep(global_step):
+
+    return tf.assign(global_step,global_step+1)
 
 test_width = 600
 test_height = 300
@@ -262,6 +274,9 @@ if __name__ == '__main__':
 
     channels = 2
 
+    accuracy_low_count = 0
+    min_loss = 100000.00
+
     with sess.as_default() and graph.as_default():
         tf_inpts = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, channels], name='inputs')
         tf_labls = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, 1], name='labels')
@@ -279,18 +294,21 @@ if __name__ == '__main__':
         else:
             raise NotImplementedError
 
-        tf_optimize,tf_learning_rate = optimize_model(tf_loss,global_step)
+        if not AUTO_DECREASE_LR:
+            tf_optimize,tf_learning_rate = optimize_model(tf_loss,global_step)
+        else:
+            tf_optimize, tf_learning_rate = optimize_model_auto_lr(tf_loss, global_step)
+            tf_inc_gstep = inc_gstep(global_step)
 
         tf.global_variables_initializer().run()
         for epoch in range(1000):
             avg_loss = []
             for step in range(file_count//batch_size):
-                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=False)
+                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=True)
                 occupied_size  = np.where(lbl1==1)[0].size
                 #print('occupied ratio: ',occupied_size/lbl1.size)
                 l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
                 avg_loss.append(l)
-                #print(l)
 
             if (epoch+1)%1==0:
 
@@ -299,7 +317,6 @@ if __name__ == '__main__':
 
                 for col_no in range(0, 150, 30):
                     for row_no in range(0, 300, 60):
-
                         local_xx = xx[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
                         local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
                         test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
@@ -324,5 +341,19 @@ if __name__ == '__main__':
                 #plt.show()
                 plt.savefig(pred_data_dir+os.sep+'pred_%d.png'%(epoch+1))
 
+            curr_loss = np.mean(avg_loss)
+
+            if curr_loss > min_loss:
+                accuracy_low_count += 1
+                print('\tIncreasing the accuracy_low_count to ',accuracy_low_count)
+
+            if accuracy_low_count >= ACCURACY_DROP_CAP:
+                print('\tAccuracy drop exceeded the threshold')
+                sess.run(tf_inc_gstep)
+                accuracy_low_count = 0
+
             print('Loss Epoch (%d): %.5f'%(epoch,np.mean(avg_loss)))
-            print('Learning rate: ',sess.run(tf_learning_rate))
+            print('\tLearning rate: ',sess.run([tf_learning_rate,global_step]))
+
+            if curr_loss < min_loss:
+                min_loss = curr_loss
