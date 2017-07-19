@@ -20,7 +20,7 @@ OUTPUT_TYPE = 'regression'
 if OUTPUT_TYPE == 'regression':
     VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[2,2,1,16]}
     OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,16],'deconv1':[batch_size,30,60,1]}
-    TEST_OUTPUT_SHAPES = {'deconv2':[1,30, 60,16],'deconv1':[1,30,60,1]}
+    TEST_OUTPUT_SHAPES = {'deconv2':[1,30,60,16],'deconv1':[1,30,60,1]}
 elif OUTPUT_TYPE == 'classification':
     VAR_SHAPES = {'conv1': [3, 3, 2, 32], 'conv2': [3, 3, 32, 64], 'deconv2': [3, 3, 32, 64], 'deconv1': [1, 1, 3, 32]}
     OUTPUT_SHAPES = {'deconv2': [batch_size, 30, 60, 32], 'deconv1': [batch_size, 30, 60, 3]}
@@ -77,7 +77,7 @@ def build_tensorflw_variables():
             # the variable exists, you will get a ValueError saying the variable exists
             try:
                 if scope.startswith('conv'):
-                    tf.get_variable(TF_WEIGHTS_SCOPE,shape=VAR_SHAPES[scope],
+                    tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
                                               initializer=tf.truncated_normal_initializer(stddev=0.1,dtype=tf.float32))
                     tf.get_variable(TF_BIAS_SCOPE, VAR_SHAPES[scope][-1],
                                            initializer = tf.constant_initializer(0.001,dtype=tf.float32))
@@ -116,11 +116,11 @@ def get_inference(tf_inputs,OUTPUT_SHAPES):
             if scope.startswith('deconv'):
                 weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
-                if si== len(CONV_SCOPES)-1:
+                if si == len(CONV_SCOPES)-1:
                     if OUTPUT_TYPE == 'regression':
                         print('\t\tConvolution with TanH activation for ', scope)
 
-                        h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
+                        h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
                         print('\t\t\tOutput shape: ', h.get_shape().as_list())
                     elif OUTPUT_TYPE == 'classification':
                         print('\t\tConvolution with logits for ', scope)
@@ -285,9 +285,8 @@ if __name__ == '__main__':
         build_tensorflw_variables()
 
         if OUTPUT_TYPE=='classification':
-            tf_loss = calculate_loss_one_hot(tf_inpts,tf_labls)
+            tf_loss = calculate_loss_one_hot(tf_inpts, tf_labls)
             tf_prediction = get_predictions_with_ohe(tf_test_inputs)
-
         elif OUTPUT_TYPE=='regression':
             tf_loss = calculate_loss(tf_inpts, tf_labls)
             tf_prediction = get_prediction(tf_test_inputs)
@@ -295,7 +294,7 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         if not AUTO_DECREASE_LR:
-            tf_optimize,tf_learning_rate = optimize_model(tf_loss,global_step)
+            tf_optimize, tf_learning_rate = optimize_model(tf_loss,global_step)
         else:
             tf_optimize, tf_learning_rate = optimize_model_auto_lr(tf_loss, global_step)
             tf_inc_gstep = inc_gstep(global_step)
@@ -304,7 +303,7 @@ if __name__ == '__main__':
         for epoch in range(1000):
             avg_loss = []
             for step in range(file_count//batch_size):
-                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=True)
+                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=True,rand_cover_percentage=None)
                 occupied_size  = np.where(lbl1==1)[0].size
                 #print('occupied ratio: ',occupied_size/lbl1.size)
                 l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
