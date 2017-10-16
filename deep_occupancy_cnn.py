@@ -7,28 +7,27 @@ import matplotlib.pyplot  as plt
 import os
 from skimage import io,img_as_uint
 import sys
+from scipy import ndimage
 
-CONV_SCOPES = ['conv1','conv2','deconv2','deconv1']
+CONV_SCOPES = ['conv1','conv2','conv3','conv4','deconv2','deconv1']
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
-conv1kernel = 1
-conv2kernel = 1
+conv1kernel = 3
+conv2kernel = 3
 
 batch_size = 10
 OUTPUT_TYPE = 'regression'
 
 if OUTPUT_TYPE == 'regression':
-    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],
-                  'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[conv1kernel,conv1kernel,1,16]}
+    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16], 'conv2': [1,1,16,16],
+                  'conv3':[conv2kernel,conv2kernel,16,32], 'conv4': [1,1,32,32],
+                  'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
     OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,16],'deconv1':[batch_size,30,60,1]}
     TEST_OUTPUT_SHAPES = {'deconv2':[1,30,60,16],'deconv1':[1,30,60,1]}
 
 elif OUTPUT_TYPE == 'classification':
-    VAR_SHAPES = {'conv1': [3, 3, 2, 32], 'conv2': [3, 3, 32, 64], 'deconv2': [3, 3, 32, 64], 'deconv1': [1, 1, 3, 32]}
-    OUTPUT_SHAPES = {'deconv2': [batch_size, 28, 58, 32], 'deconv1': [batch_size, 28, 58, 3]}
-    TEST_OUTPUT_SHAPES = {'deconv2': [1, 28, 58, 32], 'deconv1': [1, 28, 58, 3]}
-
+    raise NotImplementedError
 else:
     raise NotImplementedError
 
@@ -346,15 +345,17 @@ if __name__ == '__main__':
 
                         test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
 
-                '''for col_no in range(0, 150, 15):
-                    for row_no in range(0, 300, 30):
-                        local_xx = xx[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
-                        local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
-                        test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
+                # Smoothing test_full_map
+                test_full_map = ndimage.gaussian_filter(test_full_map, sigma=(1.5,1.5))
+                '''for col_no in range(0, 120, 30):
+                    for row_no in range(0, 240, 60):
+                        local_xx = xx[(col_no+15):(col_no+15) + 30, (row_no+30):(row_no+30) + 60][:, :, np.newaxis]
+                        local_yy = yy[(col_no+15):(col_no+15) + 30, (row_no+30):(row_no+30) + 60][:, :, np.newaxis]
 
+                        test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
                         pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/normalize_constant})
 
-                        test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]'''
+                        test_full_map[(col_no+25):(col_no+25) + 10, (row_no+40):(row_no+40) + 40] = pred[0, 10:20, 10:50,0]'''
 
                 plt.close('all')
                 plt.figure(figsize=(12, 10))

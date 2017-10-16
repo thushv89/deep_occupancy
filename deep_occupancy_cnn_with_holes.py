@@ -7,19 +7,25 @@ import matplotlib.pyplot  as plt
 import os
 from skimage import io,img_as_uint
 import sys
+from scipy import ndimage
 
-CONV_SCOPES = ['conv1','conv2','deconv2','deconv1']
+CONV_SCOPES = ['conv1','conv2','conv3','conv4','deconv2','deconv1']
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
-conv1kernel = 2
-conv2kernel = 2
+conv1kernel = 3
+conv2kernel = 3
 
 batch_size = 10
 OUTPUT_TYPE = 'regression'
 
-VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[2,2,1,16]}
-VAR_REC_SHAPES = {'conv1': [conv1kernel,conv1kernel,1,16],'conv2':[conv2kernel,conv2kernel,16,32],'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[2,2,1,16]}
+VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2': [1,1,16,16],
+              'conv3':[conv2kernel,conv2kernel,16,32],'conv4': [1,1,32,32],
+              'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
+VAR_REC_SHAPES = {'conv1': [conv1kernel,conv1kernel,1,16],'conv2': [1,1,16,16],
+                  'conv3':[conv2kernel,conv2kernel,16,32],'conv4': [1,1,32,32],
+                  'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
+
 OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,16],'deconv1':[batch_size,30,60,1]}
 TEST_OUTPUT_SHAPES = {'deconv2':[1,30, 60,16],'deconv1':[1,30,60,1]}
 
@@ -71,7 +77,7 @@ def build_tensorflw_variables():
     :return:
     '''
     global logger,sess,graph
-    global CONV_SCOPES, VAR_SHAPES, VAR_REC_SHAPES, TF_WEIGHTS_SCOPE, TF_BIAS_SCOPE, TF_DECONV_SCOPE
+    global CONV_SCOPES, VAR_SHAPES, TF_WEIGHTS_SCOPE, TF_BIAS_SCOPE, TF_DECONV_SCOPE
 
     print("Building Tensorflow Variables (Tensorflow)...")
     for si,scope in enumerate(CONV_SCOPES):
@@ -81,21 +87,21 @@ def build_tensorflw_variables():
             # the variable exists, you will get a ValueError saying the variable exists
             try:
                 if scope.startswith('conv'):
-                    tf.get_variable(TF_WEIGHTS_SCOPE,shape=VAR_SHAPES[scope],
-                                              initializer=tf.truncated_normal_initializer(stddev=0.1,dtype=tf.float32))
-                    tf.get_variable(TF_BIAS_SCOPE, VAR_SHAPES[scope][-1],
-                                           initializer = tf.constant_initializer(0.001,dtype=tf.float32))
+                    tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
+                                              initializer=tf.contrib.layers.xavier_initializer())
+                    tf.get_variable(TF_BIAS_SCOPE,
+                                           initializer = tf.random_uniform(shape=[VAR_SHAPES[scope][-1]],minval=-0.01,maxval=0.01,dtype=tf.float32))
 
                 if scope.startswith('deconv'):
                     tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
-                                              initializer=tf.truncated_normal_initializer(stddev=0.1,
-                                                                                          dtype=tf.float32))
-                    tf.get_variable(TF_BIAS_SCOPE, VAR_SHAPES[scope][-2],
-                                           initializer=tf.constant_initializer(0.001, dtype=tf.float32))
+                                              initializer=tf.contrib.layers.xavier_initializer())
+                    tf.get_variable(TF_BIAS_SCOPE,
+                                           initializer=tf.random_uniform(shape=[VAR_SHAPES[scope][-2]], minval=-0.01,maxval=0.01,dtype=tf.float32))
             except ValueError as e:
                 print(e)
 
         print([v.name for v in tf.global_variables()])
+
 
 
 def build_tensorflw_reconstruction_variables():
@@ -111,22 +117,22 @@ def build_tensorflw_reconstruction_variables():
     for si,scope in enumerate(CONV_SCOPES):
         with tf.variable_scope(TF_RECONSTRUCTION_SCOPE):
             with tf.variable_scope(scope):
-
                 # Try Except because if you try get_variable with an intializer and
                 # the variable exists, you will get a ValueError saying the variable exists
                 try:
                     if scope.startswith('conv'):
-                        tf.get_variable(TF_WEIGHTS_SCOPE,shape=VAR_REC_SHAPES[scope],
-                                                  initializer=tf.truncated_normal_initializer(stddev=0.1,dtype=tf.float32))
-                        tf.get_variable(TF_BIAS_SCOPE, VAR_REC_SHAPES[scope][-1],
-                                               initializer = tf.constant_initializer(0.001,dtype=tf.float32))
+                        tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_REC_SHAPES[scope],
+                                        initializer=tf.contrib.layers.xavier_initializer())
+                        tf.get_variable(TF_BIAS_SCOPE,
+                                        initializer=tf.random_uniform(shape=[VAR_REC_SHAPES[scope][-1]], minval=-0.01,
+                                                                      maxval=0.01, dtype=tf.float32))
 
                     if scope.startswith('deconv'):
                         tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_REC_SHAPES[scope],
-                                                  initializer=tf.truncated_normal_initializer(stddev=0.1,
-                                                                                              dtype=tf.float32))
-                        tf.get_variable(TF_BIAS_SCOPE, VAR_REC_SHAPES[scope][-2],
-                                               initializer=tf.constant_initializer(0.001, dtype=tf.float32))
+                                        initializer=tf.contrib.layers.xavier_initializer())
+                        tf.get_variable(TF_BIAS_SCOPE,
+                                        initializer=tf.random_uniform(shape=[VAR_REC_SHAPES[scope][-2]], minval=-0.01,
+                                                                      maxval=0.01, dtype=tf.float32))
                 except ValueError as e:
                     print(e)
 
@@ -186,8 +192,7 @@ def get_reconstruction_inference(tf_inputs,OUTPUT_SHAPES):
     # forward pass
     for si, scope in enumerate(CONV_SCOPES):
         with tf.variable_scope(TF_RECONSTRUCTION_SCOPE, reuse=True):
-            with tf.variable_scope(scope, reuse=True) as sc:
-
+            with tf.variable_scope(scope, reuse=True):
                 if scope.startswith('conv'):
                     weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
                     print('\t\tConvolution with ReLU activation for ', scope)
@@ -201,6 +206,7 @@ def get_reconstruction_inference(tf_inputs,OUTPUT_SHAPES):
                         h = activate(tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='SAME') + bias,
                                      activation_type=ACTIVATION, name='hidden')
                         print('\t\t\tOutput shape: ', h.get_shape().as_list())
+
                 if scope.startswith('deconv'):
                     weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
@@ -242,8 +248,8 @@ def calculate_loss(tf_inputs,tf_labels):
         tf_neut_mask = tf.cast(tf.equal(tf_labels, 0), dtype=tf.float32) * rand_mask
 
         tf_neut_mask_weighted = tf.cast(tf.equal(tf_labels, 0), dtype=tf.float32) * rand_mask
-        tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 0.95
-        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.95 * rand_mask
+        tf_pos_mask_weighted = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32) * 0.99
+        tf_neg_mask_weighted = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) * 0.99 * rand_mask
 
         tf_outer_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)*9.0 + \
                             tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32) + tf.cast(tf.equal(tf_labels, 0), dtype=tf.float32)
@@ -264,17 +270,78 @@ def calculate_loss(tf_inputs,tf_labels):
 
     return loss
 
+def calculate_loss_v2(tf_inputs,tf_labels):
+    method = 'weighted'
+    l2_decay = True
+
+    if method == 'weighted':
+        tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+
+        tf_pos_mask = tf.cast(tf.equal(tf_labels, 1), dtype=tf.float32)
+        tf_neg_mask = tf.cast(tf.equal(tf_labels, -1), dtype=tf.float32)
+        tf_neut_mask = tf.cast(tf.equal(tf_labels, 0), dtype=tf.float32)
+
+        pos_importance = (1.0 - tf.reduce_sum(tf_pos_mask))
+        neg_importance = (1.0 - tf.reduce_sum(tf_neg_mask))
+        neut_importance = (1.0 - tf.reduce_sum(tf_neut_mask))*0.0
+
+        pos_importance /= (pos_importance+neg_importance+neut_importance)
+        neg_importance /= (pos_importance + neg_importance + neut_importance)
+        neut_importance /= (pos_importance + neg_importance + neut_importance)
+
+        tf_mask = tf_pos_mask*pos_importance + tf_neg_mask*neg_importance + tf_neut_mask*neut_importance
+
+        loss = tf.reduce_mean(
+            tf.reduce_sum(
+                ((tf_out - tf_labels) ** 2) * tf_mask,
+                axis=[1, 2, 3]))
+
+        if l2_decay:
+            for si, scope in enumerate(CONV_SCOPES):
+                with tf.variable_scope(scope, reuse=True):
+                    loss += beta * tf.reduce_sum(tf.get_variable(TF_WEIGHTS_SCOPE) ** 2)
+
+    return loss
+
 
 def calculate_reconstruction_loss(tf_inputs,tf_labels):
     l2_decay = False
 
     tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
     tf_rec_out = get_reconstruction_inference(tf_out, OUTPUT_SHAPES)
+
     tf_reconstruct_mask = tf.cast(tf.greater(tf_labels, 5), dtype=tf.float32)
+
     tf_modef_out = tf_rec_out * tf_reconstruct_mask
-    tf_modf_labels = (tf_labels - 10.0) * tf_reconstruct_mask
+    tf_modf_labels = tf_labels * tf_reconstruct_mask
 
     recontruction_loss = tf.reduce_mean(tf.reduce_sum((tf_modef_out-tf_modf_labels)**2,axis=[1,2,3])) + calculate_loss(tf_inputs,tf_labels)
+
+    if l2_decay:
+        with tf.variable_scope(TF_RECONSTRUCTION_SCOPE):
+            for si, scope in enumerate(CONV_SCOPES):
+                with tf.variable_scope(scope, reuse=True):
+                    recontruction_loss += beta * tf.reduce_sum(tf.get_variable(TF_WEIGHTS_SCOPE) ** 2)
+
+    return recontruction_loss
+
+
+def calculate_reconstruction_loss_v2(tf_inputs,tf_labels,tf_rand_offset_height, tf_rand_offset_width):
+    l2_decay = True
+
+    tf_out = get_inference(tf_inputs, OUTPUT_SHAPES)
+
+    tf_occlu_mask = tf.ones(shape=[batch_size,10,20,1], dtype=tf.float32)
+
+    tf_occlu_mask_pad = tf.pad(tf_occlu_mask,
+                           [[0,0],[tf_rand_offset_height, 30-(tf_rand_offset_height+10)],
+                            [tf_rand_offset_width, 60-(tf_rand_offset_width+20)], [0,0]])
+
+    #tf_occlu_mask_pad = tf.pad(tf_occlu_mask,[[0,0],[10,10],[20,20],[0,0]])
+    tf_occlu_mask_pad = tf.cast(tf.equal(tf_occlu_mask_pad,0.0),dtype=tf.float32)
+    tf_rec_out = get_reconstruction_inference(tf_out*tf_occlu_mask_pad, OUTPUT_SHAPES)
+
+    recontruction_loss = tf.reduce_mean(tf.reduce_sum((tf_rec_out-tf_out)**2,axis=[1,2,3])) #+ calculate_loss_v2(tf_inputs,tf_labels)
 
     if l2_decay:
         with tf.variable_scope(TF_RECONSTRUCTION_SCOPE):
@@ -297,20 +364,17 @@ def optimize_model(loss,global_step):
 
 
 def optimize_model_auto_lr(loss,global_step,var_list):
-    learning_rate = tf.maximum(tf.train.exponential_decay(0.00001,global_step,1,0.9,staircase=True),1e-7)
+    learning_rate = tf.maximum(tf.train.exponential_decay(0.001,global_step,1,0.9,staircase=True),1e-7)
     if var_list is None:
-        optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
+        optimize = tf.train.RMSPropOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
     else:
-        optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,var_list=var_list)
+        optimize = tf.train.RMSPropOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,var_list=var_list)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
     return optimize,learning_rate
 
 
 def inc_gstep(global_step):
-
     return tf.assign(global_step,global_step+1)
-
-
 
 if __name__ == '__main__':
     global sess,graph
@@ -329,13 +393,15 @@ if __name__ == '__main__':
     with sess.as_default() and graph.as_default():
         tf_inpts = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, channels], name='inputs')
         tf_labls = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, 1], name='labels')
+        tf_offset_height = tf.placeholder(dtype=tf.int32, shape=None, name='offset_height')
+        tf_offset_width = tf.placeholder(dtype=tf.int32, shape=None, name='offset_width')
 
         global_step = tf.Variable(0,dtype=tf.int32,trainable=False)
         tf_test_inputs = tf.placeholder(dtype=tf.float32, shape=[1, height, width, channels], name='inputs')
         build_tensorflw_variables()
         build_tensorflw_reconstruction_variables()
         tf_loss = calculate_loss(tf_inpts, tf_labls)
-        tf_reconstruction_loss = calculate_reconstruction_loss(tf_inpts, tf_labls)
+        tf_reconstruction_loss = calculate_reconstruction_loss_v2(tf_inpts, tf_labls,tf_offset_height, tf_offset_width)
 
         tf_prediction = get_prediction(tf_test_inputs)
         tf_part_prediction = get_predictions_part(tf_test_inputs)
@@ -354,16 +420,23 @@ if __name__ == '__main__':
             tf_inc_gstep = inc_gstep(global_step)
 
         tf.global_variables_initializer().run()
-        for epoch in range(1000):
+        for epoch in range(250):
             avg_loss = []
             avg_loss_rec = []
             for step in range(file_count//batch_size):
                 inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,
-                                                      shuffle=True, rand_cover_percentage=0.5, flip_lr=False, flip_ud= False)
-                occupied_size  = np.where(lbl1==1)[0].size
+                                                      shuffle=True, rand_cover_percentage=None, flip_lr=False, flip_ud= False)
+
+
+                assert np.max(lbl1)==1.0 and np.min(lbl1)==-1.0, '%.5f, %.5f'%(np.max(lbl1),np.min(lbl1))
+
                 #print('occupied ratio: ',occupied_size/lbl1.size)
                 l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
-                rec_l, _ = sess.run([tf_reconstruction_loss,tf_rec_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
+                #l, labels = sess.run([tf_loss, tf_labls],
+                #                        feed_dict={tf_inpts: inp1 / normalize_constant, tf_labls: lbl1})
+                rec_l, _ = sess.run([tf_reconstruction_loss,tf_rec_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1,
+                                                                                         tf_offset_height:np.random.randint(0,20),
+                                                                                         tf_offset_width:np.random.randint(0,40)})
                 avg_loss.append(l)
                 avg_loss_rec.append(rec_l)
 
@@ -383,6 +456,8 @@ if __name__ == '__main__':
                         pred_part = sess.run(tf_part_prediction, feed_dict = {tf_test_inputs:test_input/normalize_constant})
                         test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
                         test_full_map_part[col_no:col_no + 30, row_no:row_no + 60] = pred_part[0, :, :, 0]
+
+                test_full_map = ndimage.gaussian_filter(test_full_map, sigma=(2, 2))
 
                 plt.close('all')
                 plt.figure(figsize=(12, 10))
