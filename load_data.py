@@ -6,7 +6,7 @@ import sys
 
 files_read = 0
 
-def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuffle,rand_cover_percentage=None):
+def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuffle,rand_cover_percentage,flip_lr,flip_ud):
     """
     :param data_folder:
     :param batch_size:
@@ -32,6 +32,17 @@ def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuff
         #print('loading file %s',filename)
         npzdata = np.load(filename)
         image_mat = npzdata['image_mat']
+        x_mat,y_mat = npzdata['x_mat'],npzdata['y_mat']
+        if flip_lr and np.random.rand()<0.5:
+            x_mat = np.fliplr(x_mat)
+            y_mat = np.fliplr(y_mat)
+            image_mat = np.fliplr(image_mat)
+            print('l')
+        if flip_ud and np.random.rand()<0.5:
+            x_mat = np.flipud(x_mat)
+            y_mat = np.flipud(y_mat)
+            image_mat = np.flipud(image_mat)
+            print('u')
 
         if rand_cover_percentage is not None:
 
@@ -46,21 +57,8 @@ def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuff
             mask[np.ix_(np.arange(x_init,x_init+dx), np.arange(y_init,y_init+dy))] = 10
             image_mat += mask
 
-        # used this to visualize several occupancy labels
-        '''if 50<premutes[files_read]<80:
-            plt.close('all')
-            plt.figure(figsize=(12, 10))
-            plt.subplot(111)
-            plt.title('Occupancy $\in [elastic, elastic]$')
-            plt.imshow(npzdata['image_mat'], cmap='jet')
-            plt.colorbar()
-            plt.xlim([-300, 300]);
-            plt.ylim([0, 300])
-            plt.axis('equal')
-            plt.savefig('label_%d.png' % (premutes[files_read]))'''
-
-        single_arr = np.reshape(npzdata['x_mat'],(height,width,1))
-        single_arr = np.append(single_arr,np.reshape(npzdata['y_mat'],(height,width,1)),axis=2)
+        single_arr = np.reshape(x_mat,(height,width,1))
+        single_arr = np.append(single_arr,np.reshape(y_mat,(height,width,1)),axis=2)
         inputs[bi,:,:,:] = single_arr
         labels[bi,:,:] = np.reshape(image_mat,(height,width,1))
         files_read = (files_read + 1)%file_count

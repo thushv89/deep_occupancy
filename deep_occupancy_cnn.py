@@ -12,19 +12,23 @@ CONV_SCOPES = ['conv1','conv2','deconv2','deconv1']
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
-conv1kernel = 2
-conv2kernel = 2
+conv1kernel = 1
+conv2kernel = 1
 
-batch_size = 2
+batch_size = 10
 OUTPUT_TYPE = 'regression'
+
 if OUTPUT_TYPE == 'regression':
-    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[2,2,1,16]}
+    VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16],'conv2':[conv2kernel,conv2kernel,16,32],
+                  'deconv2':[conv2kernel,conv2kernel,16,32],'deconv1':[conv1kernel,conv1kernel,1,16]}
     OUTPUT_SHAPES = {'deconv2':[batch_size,30, 60,16],'deconv1':[batch_size,30,60,1]}
     TEST_OUTPUT_SHAPES = {'deconv2':[1,30,60,16],'deconv1':[1,30,60,1]}
+
 elif OUTPUT_TYPE == 'classification':
     VAR_SHAPES = {'conv1': [3, 3, 2, 32], 'conv2': [3, 3, 32, 64], 'deconv2': [3, 3, 32, 64], 'deconv1': [1, 1, 3, 32]}
-    OUTPUT_SHAPES = {'deconv2': [batch_size, 30, 60, 32], 'deconv1': [batch_size, 30, 60, 3]}
-    TEST_OUTPUT_SHAPES = {'deconv2': [1, 30, 60, 32], 'deconv1': [1, 30, 60, 3]}
+    OUTPUT_SHAPES = {'deconv2': [batch_size, 28, 58, 32], 'deconv1': [batch_size, 28, 58, 3]}
+    TEST_OUTPUT_SHAPES = {'deconv2': [1, 28, 58, 32], 'deconv1': [1, 28, 58, 3]}
+
 else:
     raise NotImplementedError
 
@@ -78,16 +82,15 @@ def build_tensorflw_variables():
             try:
                 if scope.startswith('conv'):
                     tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
-                                              initializer=tf.truncated_normal_initializer(stddev=0.1,dtype=tf.float32))
-                    tf.get_variable(TF_BIAS_SCOPE, VAR_SHAPES[scope][-1],
-                                           initializer = tf.constant_initializer(0.001,dtype=tf.float32))
+                                              initializer=tf.contrib.layers.xavier_initializer())
+                    tf.get_variable(TF_BIAS_SCOPE,
+                                           initializer = tf.random_uniform(shape=[VAR_SHAPES[scope][-1]],minval=-0.01,maxval=0.01,dtype=tf.float32))
 
                 if scope.startswith('deconv'):
                     tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
-                                              initializer=tf.truncated_normal_initializer(stddev=0.1,
-                                                                                          dtype=tf.float32))
-                    tf.get_variable(TF_BIAS_SCOPE, VAR_SHAPES[scope][-2],
-                                           initializer=tf.constant_initializer(0.001, dtype=tf.float32))
+                                              initializer=tf.contrib.layers.xavier_initializer())
+                    tf.get_variable(TF_BIAS_SCOPE,
+                                           initializer=tf.random_uniform(shape=[VAR_SHAPES[scope][-2]], minval=-0.01,maxval=0.01,dtype=tf.float32))
             except ValueError as e:
                 print(e)
 
@@ -106,22 +109,32 @@ def get_inference(tf_inputs,OUTPUT_SHAPES):
                 if si == 0:
                     print('\t\t\tInput shape ', tf_inputs.get_shape().as_list())
                     h = activate(
-                        tf.nn.conv2d(tf_inputs, weight, strides=[1,1,1,1], padding='SAME') + bias,
+                        tf.nn.conv2d(tf_inputs, weight, strides=[1,1,1,1], padding='VALID') + bias,
                         activation_type=ACTIVATION, name='hidden')
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
                 else:
-                    h = activate(tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='SAME') + bias,
+                    h = activate(tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='VALID') + bias,
                                  activation_type=ACTIVATION, name='hidden')
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
+
+                h_shape = h.get_shape().as_list()
+                height_fill = (30 - h_shape[1])//2
+                width_fill = (60 - h_shape[2])//2
+
+                h = tf.pad(h,[[0,0],[height_fill,height_fill],[width_fill,width_fill],[0,0]],mode='SYMMETRIC')
+                h_shape = h.get_shape().as_list()
+                print(h_shape,' ',height_fill,' ',width_fill)
+                assert h_shape[1]==30 and h_shape[2]==60
+
             if scope.startswith('deconv'):
                 weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
                 if si == len(CONV_SCOPES)-1:
                     if OUTPUT_TYPE == 'regression':
                         print('\t\tConvolution with TanH activation for ', scope)
-
                         h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
                         print('\t\t\tOutput shape: ', h.get_shape().as_list())
+
                     elif OUTPUT_TYPE == 'classification':
                         print('\t\tConvolution with logits for ', scope)
                         h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],
@@ -154,6 +167,12 @@ def get_predictions_with_ohe(tf_input):
     tf_out_args = tf.argmax(tf.nn.softmax(tf_out),axis=3)
     tf_out_args = tf.expand_dims(tf_out_args,axis=-1)-1
     return tf_out_args
+
+def get_predictions_with_croppin_and_padding(tf_input):
+    tf_out = get_inference(tf_input, TEST_OUTPUT_SHAPES)
+    tf_crop_out = tf.map_fn(lambda x: tf.image.resize_image_with_crop_or_pad(x,26,56),tf_out)
+    tf_pad_out = tf.pad(tf_crop_out,[[0,0],[2,2],[2,2],[0,0]])
+    return tf_pad_out
 
 
 def calculate_loss_one_hot(tf_inputs,tf_labels):
@@ -242,13 +261,15 @@ def calculate_loss(tf_inputs,tf_labels):
 def optimize_model(loss,global_step):
     learning_rate = tf.cond(global_step<20,lambda: tf.minimum(tf.train.exponential_decay(0.00001,global_step,2*(file_count//batch_size),1.05,staircase=True),1e-4),
                             lambda: tf.maximum(tf.train.exponential_decay(0.00001,global_step,2*(file_count//batch_size),0.95,staircase=True),1e-7))
-    optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,global_step)
+    optimize = tf.train.RMSPropOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss,global_step)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
     return optimize,learning_rate
 
+
 def optimize_model_auto_lr(loss,global_step):
-    learning_rate = tf.maximum(tf.train.exponential_decay(0.00001,global_step,1,0.9,staircase=True),1e-7)
-    optimize = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
+    # LEARNING RATE before changing 0.00001
+    learning_rate = tf.maximum(tf.train.exponential_decay(0.001,global_step,1,0.9,staircase=True),1e-7)
+    optimize = tf.train.RMSPropOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
     return optimize,learning_rate
 
@@ -259,12 +280,11 @@ def inc_gstep(global_step):
 
 test_width = 600
 test_height = 300
-pred_data_dir = 'pred_data'
+pred_data_dir = 'pred_data_special_padding'
 
 normalize_constant = 150
 
 if __name__ == '__main__':
-    global sess,graph
 
     file_count = 1300
     data_folder = 'data/'
@@ -303,7 +323,9 @@ if __name__ == '__main__':
         for epoch in range(1000):
             avg_loss = []
             for step in range(file_count//batch_size):
-                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,shuffle=True,rand_cover_percentage=None)
+                inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,
+                                                      shuffle=True,rand_cover_percentage=None, flip_lr=False, flip_ud=False)
+
                 occupied_size  = np.where(lbl1==1)[0].size
                 #print('occupied ratio: ',occupied_size/lbl1.size)
                 l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
@@ -321,7 +343,18 @@ if __name__ == '__main__':
                         test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
 
                         pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/normalize_constant})
+
                         test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
+
+                '''for col_no in range(0, 150, 15):
+                    for row_no in range(0, 300, 30):
+                        local_xx = xx[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
+                        local_yy = yy[col_no:col_no + 30, row_no:row_no + 60][:, :, np.newaxis]
+                        test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
+
+                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs:test_input/normalize_constant})
+
+                        test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]'''
 
                 plt.close('all')
                 plt.figure(figsize=(12, 10))
