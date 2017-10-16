@@ -334,14 +334,15 @@ def calculate_reconstruction_loss_v2(tf_inputs,tf_labels,tf_rand_offset_height, 
     tf_occlu_mask = tf.ones(shape=[batch_size,10,20,1], dtype=tf.float32)
 
     tf_occlu_mask_pad = tf.pad(tf_occlu_mask,
-                           [[0,0],[tf_rand_offset_height, 30-(tf_rand_offset_height+10)],
-                            [tf_rand_offset_width, 60-(tf_rand_offset_width+20)], [0,0]])
+                           [[0,0],[tf_rand_offset_height, 30 - (tf_rand_offset_height+10)],
+                            [tf_rand_offset_width, 60 - (tf_rand_offset_width+20)], [0,0]])
 
     #tf_occlu_mask_pad = tf.pad(tf_occlu_mask,[[0,0],[10,10],[20,20],[0,0]])
     tf_occlu_mask_pad = tf.cast(tf.equal(tf_occlu_mask_pad,0.0),dtype=tf.float32)
     tf_rec_out = get_reconstruction_inference(tf_out*tf_occlu_mask_pad, OUTPUT_SHAPES)
 
-    recontruction_loss = tf.reduce_mean(tf.reduce_sum((tf_rec_out-tf_out)**2,axis=[1,2,3])) #+ calculate_loss_v2(tf_inputs,tf_labels)
+    recontruction_loss = tf.reduce_mean(tf.reduce_sum((tf_rec_out-tf_out)**2,axis=[1,2,3])) + \
+                         calculate_loss_v2(tf_inputs,tf_labels)
 
     if l2_decay:
         with tf.variable_scope(TF_RECONSTRUCTION_SCOPE):
@@ -406,18 +407,14 @@ if __name__ == '__main__':
         tf_prediction = get_prediction(tf_test_inputs)
         tf_part_prediction = get_predictions_part(tf_test_inputs)
 
-        if not AUTO_DECREASE_LR:
-            tf_optimize,tf_learning_rate = optimize_model(tf_loss,global_step)
-            tf_rec_optimize, _ = optimize_model(tf_reconstruction_loss,None)
-        else:
-            tf_optimize, tf_learning_rate = optimize_model_auto_lr(tf_loss, global_step,None)
-            var_list = []
-            for v in tf.global_variables():
-                if v.name.startswith(TF_RECONSTRUCTION_SCOPE):
-                    var_list.append(v)
-                    print(v.name)
-            tf_rec_optimize, _ = optimize_model_auto_lr(tf_reconstruction_loss, global_step,var_list)
-            tf_inc_gstep = inc_gstep(global_step)
+        tf_optimize, tf_learning_rate = optimize_model_auto_lr(tf_loss, global_step,None)
+        var_list = []
+        for v in tf.global_variables():
+            if v.name.startswith(TF_RECONSTRUCTION_SCOPE):
+                var_list.append(v)
+                print(v.name)
+        tf_rec_optimize, _ = optimize_model_auto_lr(tf_reconstruction_loss, global_step,var_list)
+        tf_inc_gstep = inc_gstep(global_step)
 
         tf.global_variables_initializer().run()
         for epoch in range(250):
@@ -428,7 +425,7 @@ if __name__ == '__main__':
                                                       shuffle=True, rand_cover_percentage=None, flip_lr=False, flip_ud= False)
 
 
-                assert np.max(lbl1)==1.0 and np.min(lbl1)==-1.0, '%.5f, %.5f'%(np.max(lbl1),np.min(lbl1))
+                #assert np.max(lbl1)==1.0 and np.min(lbl1)==-1.0, '%.5f, %.5f'%(np.max(lbl1),np.min(lbl1))
 
                 #print('occupied ratio: ',occupied_size/lbl1.size)
                 l, labels, _ = sess.run([tf_loss, tf_labls, tf_optimize], feed_dict={tf_inpts:inp1/normalize_constant, tf_labls:lbl1})
@@ -457,7 +454,7 @@ if __name__ == '__main__':
                         test_full_map[col_no:col_no + 30, row_no:row_no + 60] = pred[0, :, :,0]
                         test_full_map_part[col_no:col_no + 30, row_no:row_no + 60] = pred_part[0, :, :, 0]
 
-                test_full_map = ndimage.gaussian_filter(test_full_map, sigma=(2, 2))
+                test_full_map = ndimage.gaussian_filter(test_full_map, sigma=(2.5, 2.5))
 
                 plt.close('all')
                 plt.figure(figsize=(12, 10))
