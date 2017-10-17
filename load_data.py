@@ -6,7 +6,7 @@ import sys
 
 files_read = 0
 
-def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuffle,rand_cover_percentage,flip_lr,flip_ud):
+def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuffle,rand_cover_percentage,flip_lr,flip_ud,exp_type):
     """
     :param data_folder:
     :param batch_size:
@@ -28,7 +28,10 @@ def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuff
         premutes = np.arange(file_count)
 
     for bi in range(batch_size):
-        filename = data_folder + os.sep + 'res_2_img_%d.npz'%premutes[files_read]
+        if exp_type != 'intel':
+            filename = data_folder + os.sep + 'res_2_img_%d.npz'%premutes[files_read]
+        else:
+            filename = data_folder + os.sep + 'res_0.5_img_%d.npz' % premutes[files_read]
         #print('loading file %s',filename)
         npzdata = np.load(filename)
         image_mat = npzdata['image_mat']
@@ -37,12 +40,11 @@ def load_batch_npz(data_folder,batch_size,height,width,channels,file_count,shuff
             x_mat = np.fliplr(x_mat)
             y_mat = np.fliplr(y_mat)
             image_mat = np.fliplr(image_mat)
-            print('l')
+
         if flip_ud and np.random.rand()<0.5:
             x_mat = np.flipud(x_mat)
             y_mat = np.flipud(y_mat)
             image_mat = np.flipud(image_mat)
-            print('u')
 
         if rand_cover_percentage is not None:
 
