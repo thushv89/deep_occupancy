@@ -36,11 +36,11 @@ beta = 0.00001
 AUTO_DECREASE_LR = True
 ACCURACY_DROP_CAP = 3
 
-USE_BN = False
+USE_BN = True
 
-mean_var_decay = 0.5
+mean_var_decay = 0.59
 
-def define_hyperparameters(width,height):
+def define_hyperparameters(width,height,exp_type):
     global CONV_SCOPES,VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES
 
     CONV_SCOPES = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'conv6', 'deconv3', 'deconv2', 'deconv1']
@@ -53,13 +53,23 @@ def define_hyperparameters(width,height):
 
 
     if OUTPUT_TYPE == 'regression':
-        VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16], 'conv2': [1,1,16,16],
-                      'conv3':[conv2kernel,conv2kernel,16,32], 'conv4': [1,1,32,32],
-                      'conv5': [conv2kernel, conv2kernel, 32, 32], 'conv6': [1, 1, 32, 32],
-                      'deconv3':[1,1,32,32],'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
-        TRAIN_OUTPUT_SHAPES = {'deconv3':[batch_size,height, width,32],'deconv2':[batch_size,height, width,16],'deconv1':[batch_size,height,width,1]}
-        TEST_OUTPUT_SHAPES = {'deconv3':[1,height,width,32],'deconv2':[1,height,width,16],'deconv1':[1,height,width,1]}
-
+        if exp_type != 'intel':
+            VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16], 'conv2': [1,1,16,16],
+                          'conv3':[conv2kernel,conv2kernel,16,32], 'conv4': [1,1,32,32],
+                          'conv5': [conv2kernel, conv2kernel, 32, 32], 'conv6': [1, 1, 32, 32],
+                          'deconv3':[1,1,32,32],'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
+            TRAIN_OUTPUT_SHAPES = {'deconv3':[batch_size,height, width,32],'deconv2':[batch_size,height, width,16],'deconv1':[batch_size,height,width,1]}
+            TEST_OUTPUT_SHAPES = {'deconv3':[1,height,width,32],'deconv2':[1,height,width,16],'deconv1':[1,height,width,1]}
+        else:
+            VAR_SHAPES = {'conv1': [conv1kernel, conv1kernel, 2, 32], 'conv2': [1, 1, 32, 32],
+                          'conv3': [conv2kernel, conv2kernel, 32, 64], 'conv4': [1, 1, 64, 64],
+                          'conv5': [conv2kernel, conv2kernel, 64, 64], 'conv6': [1, 1, 64, 64],
+                          'deconv3': [1, 1, 64, 64], 'deconv2': [1, 1, 32, 64], 'deconv1': [1, 1, 1, 32]}
+            TRAIN_OUTPUT_SHAPES = {'deconv3': [batch_size, height, width, 64],
+                                   'deconv2': [batch_size, height, width, 32],
+                                   'deconv1': [batch_size, height, width, 1]}
+            TEST_OUTPUT_SHAPES = {'deconv3': [1, height, width, 64], 'deconv2': [1, height, width, 32],
+                                  'deconv1': [1, height, width, 1]}
     elif OUTPUT_TYPE == 'classification':
         raise NotImplementedError
     else:
@@ -149,12 +159,13 @@ def build_bn_variables(tf_inputs):
                     tf.get_variable(TF_BETA, initializer=tf.zeros(shape=[1]+h_shape[1:], dtype=tf.float32))
                     tf.get_variable(TF_GAMMA, initializer=tf.random_uniform(minval=0.9,maxval=1.0,shape=[1]+h_shape[1:], dtype=tf.float32))
 
-                height_fill = (30 - h_shape[1]) // 2
-                width_fill = (60 - h_shape[2]) // 2
+                height_fill = (height - h_shape[1]) // 2
+                width_fill = (width - h_shape[2]) // 2
+                print(h_shape, ' ', height_fill, ' ', width_fill)
                 h = tf.pad(h, [[0, 0], [height_fill, height_fill], [width_fill, width_fill], [0, 0]], mode='SYMMETRIC')
                 h_shape = h.get_shape().as_list()
-                print(h_shape, ' ', height_fill, ' ', width_fill)
-                assert h_shape[1] == 30 and h_shape[2] == 60
+
+                assert h_shape[1] == height and h_shape[2] == width
 
             if scope.startswith('deconv'):
                 with tf.variable_scope(scope, reuse=True):
@@ -198,10 +209,16 @@ def get_inference(tf_inputs,OUTPUT_SHAPES,is_training):
                 print('\t\tConvolution with ReLU activation for ', scope)
                 if si == 0:
                     print('\t\t\tInput shape ', tf_inputs.get_shape().as_list())
-                    h = tf.nn.conv2d(tf_inputs, weight, strides=[1,1,1,1], padding='VALID') + bias
+                    if not USE_BN:
+                        h = tf.nn.conv2d(tf_inputs, weight, strides=[1,1,1,1], padding='VALID') + bias
+                    else:
+                        h = tf.nn.conv2d(tf_inputs, weight, strides=[1, 1, 1, 1], padding='VALID')
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
                 else:
-                    h = tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='VALID') + bias
+                    if not USE_BN:
+                        h = tf.nn.conv2d(h, weight, strides=[1,1,1,1], padding='VALID') + bias
+                    else:
+                        h = tf.nn.conv2d(h, weight, strides=[1, 1, 1, 1], padding='VALID')
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
 
                 if USE_BN:
@@ -221,9 +238,10 @@ def get_inference(tf_inputs,OUTPUT_SHAPES,is_training):
 
                 height_fill = (height - h_shape[1])//2
                 width_fill = (width - h_shape[2])//2
+                print(h_shape, ' ', height_fill, ' ', width_fill)
                 h = tf.pad(h,[[0,0],[height_fill,height_fill],[width_fill,width_fill],[0,0]],mode='SYMMETRIC')
                 h_shape = h.get_shape().as_list()
-                print(h_shape,' ',height_fill,' ',width_fill)
+
                 assert h_shape[1]==height and h_shape[2]==width
 
             if scope.startswith('deconv'):
@@ -243,7 +261,11 @@ def get_inference(tf_inputs,OUTPUT_SHAPES,is_training):
 
                 else:
                     print('\t\tConvolution with ReLU activation for ', scope)
-                    h = tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias
+                    if not USE_BN:
+                        h = tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias
+                    else:
+                        h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope], strides=[1, 1, 1, 1],
+                                                   padding="SAME")
                     print('\t\t\tOutput shape: ', h.get_shape().as_list())
 
                     if USE_BN:
@@ -362,12 +384,12 @@ def calculate_loss_v2(tf_out,tf_labels):
     neg_importance /= (pos_importance + neg_importance + neut_importance)
     neut_importance /= (pos_importance + neg_importance + neut_importance)
 
-    if not USE_BN:
-        tf_mask = tf_pos_mask * (5.0*(1.0+pos_importance))**2 + tf_neg_mask * (1.0+neg_importance)**2 + \
-                  tf_neut_mask * (1.0 + neut_importance)**2
-    else:
-        tf_mask = tf_pos_mask * (1.0 + pos_importance) + tf_neg_mask * (1.0 + neg_importance) + \
-                  tf_neut_mask * (1.0 + neut_importance)
+
+    tf_mask = tf_pos_mask * (5.0*(1.0+pos_importance))**2 + tf_neg_mask * (1.0+neg_importance)**2 + \
+              tf_neut_mask * (1.0 + neut_importance)**2
+
+    #    tf_mask = tf_pos_mask * (1.0 + pos_importance) + tf_neg_mask * (1.0 + neg_importance) + \
+    #              tf_neut_mask * (1.0 + neut_importance)
     loss = tf.reduce_mean(
         tf.reduce_sum(
             ((tf_out - tf_labels) ** 2) * tf_mask ,
@@ -450,7 +472,7 @@ if __name__ == '__main__':
     min_loss = 100000.00
 
 
-    define_hyperparameters(width,height)
+    define_hyperparameters(width,height,exp_type)
 
     with sess.as_default() and graph.as_default():
         tf_inpts = tf.placeholder(dtype=tf.float32, shape=[batch_size, height, width, channels], name='inputs')
@@ -477,7 +499,7 @@ if __name__ == '__main__':
             tf_inc_gstep = inc_gstep(global_step)
 
         tf.global_variables_initializer().run()
-        for epoch in range(350):
+        for epoch in range(500):
             avg_loss = []
             for step in range(file_count//batch_size):
                 inp1, lbl1 = load_data.load_batch_npz(data_folder, batch_size, height, width, channels, file_count,
