@@ -44,7 +44,7 @@ mean_var_decay = 0.59
 def define_hyperparameters(width,height,exp_type):
     global CONV_SCOPES,VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES,start_lr,batch_size,beta
 
-    CONV_SCOPES = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'conv6', 'deconv3', 'deconv2', 'deconv1']
+    CONV_SCOPES = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'conv6', 'deconv3', 'deconv2', 'deconv1','fulcon']
 
     conv1kernel_x,conv1kernel_y = 6,3
     conv2kernel_x, conv2kernel_y = 6,3
@@ -58,7 +58,7 @@ def define_hyperparameters(width,height,exp_type):
             VAR_SHAPES = {'conv1': [conv1kernel_y,conv1kernel_x,2,16], 'conv2': [1,1,16,16],
                           'conv3':[conv2kernel_y,conv2kernel_x,16,32], 'conv4': [1,1,32,32],
                           'conv5': [conv2kernel_y, conv2kernel_x, 32, 32], 'conv6': [1, 1, 32, 32],
-                          'deconv3':[1,1,32,32],'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
+                          'deconv3':[1,1,32,32],'deconv2':[1,1,16,32],'deconv1':[1,1,1,16],'fulcon':[1,height,width,1]}
             TRAIN_OUTPUT_SHAPES = {'deconv3':[batch_size,height, width,32],'deconv2':[batch_size,height, width,16],'deconv1':[batch_size,height,width,1]}
             TEST_OUTPUT_SHAPES = {'deconv3':[1,height,width,32],'deconv2':[1,height,width,16],'deconv1':[1,height,width,1]}
         else:
@@ -68,7 +68,7 @@ def define_hyperparameters(width,height,exp_type):
                           'conv3': [conv2kernel_y, conv2kernel_x, 32, 64], 'conv4': [1, 1, 64, 64],
                           'conv5': [conv2kernel_y, conv2kernel_x, 64, 64], 'conv6': [1, 1, 64, 64],
                           'deconv3': [1, 1 , 64, 64], 'deconv2': [1, 1, 32, 64],
-                          'deconv1': [1, 1, 1, 32]}
+                          'deconv1': [1, 1, 1, 32],'fulcon':[1,height,width,1]}
             TRAIN_OUTPUT_SHAPES = {'deconv3': [batch_size, height, width, 64],
                                    'deconv2': [batch_size, height, width, 32],
                                    'deconv1': [batch_size, height, width, 1]}
@@ -123,22 +123,31 @@ def build_tensorflw_variables():
 
             # Try Except because if you try get_variable with an intializer and
             # the variable exists, you will get a ValueError saying the variable exists
-            try:
-                if scope.startswith('conv'):
-                    tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
-                                              initializer=tf.contrib.layers.xavier_initializer())
-                    tf.get_variable(TF_BIAS_SCOPE,
-                                           initializer = tf.random_uniform(shape=[VAR_SHAPES[scope][-1]],minval=-0.01,maxval=0.01,dtype=tf.float32))
 
-                if scope.startswith('deconv'):
-                    tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
-                                              initializer=tf.contrib.layers.xavier_initializer())
-                    tf.get_variable(TF_BIAS_SCOPE,
-                                           initializer=tf.random_uniform(shape=[VAR_SHAPES[scope][-2]], minval=-0.01,maxval=0.01,dtype=tf.float32))
-            except ValueError as e:
-                print(e)
+            if scope.startswith('conv'):
+                tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
+                                          initializer=tf.contrib.layers.xavier_initializer())
+                tf.get_variable(TF_BIAS_SCOPE,
+                                       initializer = tf.random_uniform(shape=[VAR_SHAPES[scope][-1]],minval=-0.01,maxval=0.01,dtype=tf.float32))
 
-        print([v.name for v in tf.global_variables()])
+            if scope.startswith('deconv'):
+                tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
+                                          initializer=tf.contrib.layers.xavier_initializer())
+                tf.get_variable(TF_BIAS_SCOPE,
+                                       initializer=tf.random_uniform(shape=[VAR_SHAPES[scope][-2]], minval=-0.01,maxval=0.01,dtype=tf.float32))
+
+            if scope == 'fulcon':
+                print('Build fulcon variable')
+                tf.get_variable(TF_WEIGHTS_SCOPE, shape=VAR_SHAPES[scope],
+                                initializer=tf.contrib.layers.xavier_initializer())
+                print('Build weight')
+                tf.get_variable(TF_BIAS_SCOPE,
+                                initializer=tf.random_uniform(shape=VAR_SHAPES[scope], minval=-0.01,
+                                                              maxval=0.01, dtype=tf.float32))
+                print('Build bias')
+
+
+    print([v.name for v in tf.global_variables()])
 
 
 def build_bn_variables(tf_inputs):
@@ -256,46 +265,39 @@ def get_inference(tf_inputs,OUTPUT_SHAPES,is_training):
             if scope.startswith('deconv'):
                 weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
-                if si == len(CONV_SCOPES)-1:
-                    if OUTPUT_TYPE == 'regression':
-                        print('\t\tConvolution with TanH activation for ', scope)
-                        h = tf.nn.tanh(tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME") + bias)
-                        print('\t\t\tOutput shape: ', h.get_shape().as_list())
 
-                    elif OUTPUT_TYPE == 'classification':
-                        print('\t\tConvolution with logits for ', scope)
-                        h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope],
-                                                   strides=[1, 1, 1, 1], padding="SAME") + bias
-                        print('\t\t\tOutput shape: ', h.get_shape().as_list())
-
+                print('\t\tConvolution with ReLU activation for ', scope)
+                if not USE_BN:
+                    h = tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias
                 else:
-                    print('\t\tConvolution with ReLU activation for ', scope)
-                    if not USE_BN:
-                        h = tf.nn.conv2d_transpose(h, weight,OUTPUT_SHAPES[scope],strides=[1,1,1,1],padding="SAME")+bias
+                    h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope], strides=[1, 1, 1, 1],
+                                               padding="SAME")
+                print('\t\t\tOutput shape: ', h.get_shape().as_list())
+
+                if USE_BN:
+                    if is_training:
+                        mean, var = tf.nn.moments(h, axes=[0], keep_dims=True)
+                        tf.add_to_collection(
+                            tf.GraphKeys.UPDATE_OPS,
+                            tf.assign(tf.get_variable(TF_MU),
+                                      mean_var_decay * tf.get_variable(TF_MU) + (1 - mean_var_decay) * mean)
+                        )
+                        tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, tf.assign(tf.get_variable(TF_SIGMA),
+                                                        mean_var_decay * tf.get_variable(TF_SIGMA) + (
+                                                        1 - mean_var_decay) * var))
+
+                        h = tf.nn.batch_normalization(h, mean, var,
+                                                      tf.get_variable(TF_BETA), tf.get_variable(TF_GAMMA),1e-6)
                     else:
-                        h = tf.nn.conv2d_transpose(h, weight, OUTPUT_SHAPES[scope], strides=[1, 1, 1, 1],
-                                                   padding="SAME")
-                    print('\t\t\tOutput shape: ', h.get_shape().as_list())
+                        h = tf.nn.batch_normalization(h, tf.get_variable(TF_MU), tf.get_variable(TF_SIGMA), None, None,
+                                                      1e-6)
 
-                    if USE_BN:
-                        if is_training:
-                            mean, var = tf.nn.moments(h, axes=[0], keep_dims=True)
-                            tf.add_to_collection(
-                                tf.GraphKeys.UPDATE_OPS,
-                                tf.assign(tf.get_variable(TF_MU),
-                                          mean_var_decay * tf.get_variable(TF_MU) + (1 - mean_var_decay) * mean)
-                            )
-                            tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, tf.assign(tf.get_variable(TF_SIGMA),
-                                                            mean_var_decay * tf.get_variable(TF_SIGMA) + (
-                                                            1 - mean_var_decay) * var))
+                h = activate(h, activation_type=ACTIVATION)
+            if scope=='fulcon':
+                weight, bias = tf.get_variable(TF_WEIGHTS_SCOPE), tf.get_variable(TF_BIAS_SCOPE)
 
-                            h = tf.nn.batch_normalization(h, mean, var,
-                                                          tf.get_variable(TF_BETA), tf.get_variable(TF_GAMMA),1e-6)
-                        else:
-                            h = tf.nn.batch_normalization(h, tf.get_variable(TF_MU), tf.get_variable(TF_SIGMA), None, None,
-                                                          1e-6)
-
-                    h = activate(h, activation_type=ACTIVATION)
+                h = tf.multiply(weight,h) + bias
+                h = tf.nn.tanh(h)
 
             if 'pool' in scope:
                 raise NotImplementedError
