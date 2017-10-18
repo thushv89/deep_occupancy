@@ -17,8 +17,8 @@ VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES = None,None,None
 # in 30,60
 # after pool1 : 15,30
 # after pool2 : 5,10
-conv1kernel = 3
-conv2kernel = 3
+conv1kernel = None
+conv2kernel = None
 
 batch_size = 10
 OUTPUT_TYPE = 'regression'
@@ -31,22 +31,23 @@ TF_SIGMA = 'sigma'
 TF_BETA = 'beta'
 TF_GAMMA = 'gamma'
 
-ACTIVATION = 'lrelu'
+ACTIVATION = 'relu'
 beta = 0.00001
+start_lr = 0.001
 AUTO_DECREASE_LR = True
-ACCURACY_DROP_CAP = 3
+ACCURACY_DROP_CAP = 5
 
-USE_BN = True
+USE_BN = False
 
 mean_var_decay = 0.59
 
 def define_hyperparameters(width,height,exp_type):
-    global CONV_SCOPES,VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES
+    global CONV_SCOPES,VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES,start_lr,batch_size,beta
 
     CONV_SCOPES = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'conv6', 'deconv3', 'deconv2', 'deconv1']
 
-    conv1kernel = 3
-    conv2kernel = 3
+    conv1kernel_x,conv1kernel_y = 6,3
+    conv2kernel_x, conv2kernel_y = 6,3
 
     batch_size = 10
     OUTPUT_TYPE = 'regression'
@@ -54,22 +55,28 @@ def define_hyperparameters(width,height,exp_type):
 
     if OUTPUT_TYPE == 'regression':
         if exp_type != 'intel':
-            VAR_SHAPES = {'conv1': [conv1kernel,conv1kernel,2,16], 'conv2': [1,1,16,16],
-                          'conv3':[conv2kernel,conv2kernel,16,32], 'conv4': [1,1,32,32],
-                          'conv5': [conv2kernel, conv2kernel, 32, 32], 'conv6': [1, 1, 32, 32],
+            VAR_SHAPES = {'conv1': [conv1kernel_y,conv1kernel_x,2,16], 'conv2': [1,1,16,16],
+                          'conv3':[conv2kernel_y,conv2kernel_x,16,32], 'conv4': [1,1,32,32],
+                          'conv5': [conv2kernel_y, conv2kernel_x, 32, 32], 'conv6': [1, 1, 32, 32],
                           'deconv3':[1,1,32,32],'deconv2':[1,1,16,32],'deconv1':[1,1,1,16]}
             TRAIN_OUTPUT_SHAPES = {'deconv3':[batch_size,height, width,32],'deconv2':[batch_size,height, width,16],'deconv1':[batch_size,height,width,1]}
             TEST_OUTPUT_SHAPES = {'deconv3':[1,height,width,32],'deconv2':[1,height,width,16],'deconv1':[1,height,width,1]}
         else:
-            VAR_SHAPES = {'conv1': [conv1kernel, conv1kernel, 2, 32], 'conv2': [1, 1, 32, 32],
-                          'conv3': [conv2kernel, conv2kernel, 32, 64], 'conv4': [1, 1, 64, 64],
-                          'conv5': [conv2kernel, conv2kernel, 64, 64], 'conv6': [1, 1, 64, 64],
-                          'deconv3': [1, 1, 64, 64], 'deconv2': [1, 1, 32, 64], 'deconv1': [1, 1, 1, 32]}
+            batch_size=25
+            beta = 1e-5
+            VAR_SHAPES = {'conv1': [conv1kernel_y, conv1kernel_x, 2, 32], 'conv2': [1, 1, 32, 32],
+                          'conv3': [conv2kernel_y, conv2kernel_x, 32, 64], 'conv4': [1, 1, 64, 64],
+                          'conv5': [conv2kernel_y, conv2kernel_x, 64, 64], 'conv6': [1, 1, 64, 64],
+                          'deconv3': [1, 1 , 64, 64], 'deconv2': [1, 1, 32, 64],
+                          'deconv1': [1, 1, 1, 32]}
             TRAIN_OUTPUT_SHAPES = {'deconv3': [batch_size, height, width, 64],
                                    'deconv2': [batch_size, height, width, 32],
                                    'deconv1': [batch_size, height, width, 1]}
             TEST_OUTPUT_SHAPES = {'deconv3': [1, height, width, 64], 'deconv2': [1, height, width, 32],
                                   'deconv1': [1, height, width, 1]}
+
+            start_lr = 5e-4
+
     elif OUTPUT_TYPE == 'classification':
         raise NotImplementedError
     else:
@@ -95,6 +102,8 @@ def activate(x,activation_type,name='activation'):
         return tf.nn.relu(x)
     elif activation_type=='lrelu':
         return lrelu(x)
+    elif activation_type=='elu':
+        return tf.nn.elu(x)
     else:
         raise NotImplementedError
 
@@ -159,10 +168,10 @@ def build_bn_variables(tf_inputs):
                     tf.get_variable(TF_BETA, initializer=tf.zeros(shape=[1]+h_shape[1:], dtype=tf.float32))
                     tf.get_variable(TF_GAMMA, initializer=tf.random_uniform(minval=0.9,maxval=1.0,shape=[1]+h_shape[1:], dtype=tf.float32))
 
-                height_fill = (height - h_shape[1]) // 2
-                width_fill = (width - h_shape[2]) // 2
+                height_fill = (height - h_shape[1])
+                width_fill = (width - h_shape[2])
                 print(h_shape, ' ', height_fill, ' ', width_fill)
-                h = tf.pad(h, [[0, 0], [height_fill, height_fill], [width_fill, width_fill], [0, 0]], mode='SYMMETRIC')
+                h = tf.pad(h, [[0, 0], [0, height_fill], [0, width_fill], [0, 0]], mode='SYMMETRIC')
                 h_shape = h.get_shape().as_list()
 
                 assert h_shape[1] == height and h_shape[2] == width
@@ -236,10 +245,10 @@ def get_inference(tf_inputs,OUTPUT_SHAPES,is_training):
                 h_shape = h.get_shape().as_list()
                 assert h_shape[0]==tf_inputs.get_shape().as_list()[0]
 
-                height_fill = (height - h_shape[1])//2
-                width_fill = (width - h_shape[2])//2
+                height_fill = (height - h_shape[1])
+                width_fill = (width - h_shape[2])
                 print(h_shape, ' ', height_fill, ' ', width_fill)
-                h = tf.pad(h,[[0,0],[height_fill,height_fill],[width_fill,width_fill],[0,0]],mode='SYMMETRIC')
+                h = tf.pad(h,[[0,0],[0,height_fill],[0,width_fill],[0,0]],mode='SYMMETRIC')
                 h_shape = h.get_shape().as_list()
 
                 assert h_shape[1]==height and h_shape[2]==width
@@ -384,12 +393,12 @@ def calculate_loss_v2(tf_out,tf_labels):
     neg_importance /= (pos_importance + neg_importance + neut_importance)
     neut_importance /= (pos_importance + neg_importance + neut_importance)
 
-
-    tf_mask = tf_pos_mask * (5.0*(1.0+pos_importance))**2 + tf_neg_mask * (1.0+neg_importance)**2 + \
-              tf_neut_mask * (1.0 + neut_importance)**2
-
-    #    tf_mask = tf_pos_mask * (1.0 + pos_importance) + tf_neg_mask * (1.0 + neg_importance) + \
-    #              tf_neut_mask * (1.0 + neut_importance)
+    if exp_type != 'intel':
+        tf_mask = tf_pos_mask * (5.0*(1.0+pos_importance))**2 + tf_neg_mask * (1.0+neg_importance)**2 + \
+                  tf_neut_mask * (1.0 + neut_importance)**2
+    else:
+        tf_mask = tf_pos_mask * (5.0*(1.0 + pos_importance))**2 + tf_neg_mask * (2.5*(1.0 + neg_importance))**2 + \
+                  tf_neut_mask * (1.0 + neut_importance)**2
     loss = tf.reduce_mean(
         tf.reduce_sum(
             ((tf_out - tf_labels) ** 2) * tf_mask ,
@@ -412,7 +421,7 @@ def optimize_model(loss,global_step):
 
 def optimize_model_auto_lr(loss,global_step):
     # LEARNING RATE before changing 0.00001
-    lr = 0.001 if not USE_BN else 0.00001
+    lr = start_lr if not USE_BN else 0.00001
     learning_rate = tf.maximum(tf.train.exponential_decay(lr,global_step,1,0.9,staircase=True),1e-7)
     optimize = tf.train.RMSPropOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
     #optimize = tf.train.GradientDescentOptimizer(learning_rate=0.000001).minimize(loss)
@@ -459,6 +468,7 @@ if __name__ == '__main__':
         file_count = 908
         width = 140
         height = 70
+        normalize_constant = 7.0
 
     if not os.path.exists(pred_data_dir):
         os.mkdir(pred_data_dir)
@@ -544,12 +554,11 @@ if __name__ == '__main__':
                             test_full_map[col_no:col_no + height, row_no:row_no + width] = pred[0, :, :, 0]
 
                 if exp_type == 'intel':
-                    xx, yy = np.meshgrid(np.arange(-35, 35, 0.5), np.arange(-25, 10, 0.5))
+                    xx, yy = np.meshgrid(np.arange(-35, 35, 0.1), np.arange(-25, 10, 0.1))
                     test_full_map = -100 + np.zeros(xx.shape)
 
-
-                    for col_no in range(1):
-                        for row_no in range(1):
+                    for col_no in range(0,350,height):
+                        for row_no in range(0,700,width):
                             local_xx = xx[col_no:col_no + height, row_no:row_no + width][:, :, np.newaxis]
                             local_yy = yy[col_no:col_no + height, row_no:row_no + width][:, :, np.newaxis]
                             test_input = np.concatenate((local_xx, local_yy), axis=2)[np.newaxis, :, :, :]
