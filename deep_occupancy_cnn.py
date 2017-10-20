@@ -10,6 +10,8 @@ import sys
 from scipy import ndimage
 import  getopt
 import sys
+import util2
+import time
 
 CONV_SCOPES = None
 VAR_SHAPES,TRAIN_OUTPUT_SHAPES,TEST_OUTPUT_SHAPES = None,None,None
@@ -133,6 +135,15 @@ def build_tensorflw_variables():
 
 
 def build_bn_variables(tf_inputs):
+    '''
+    Batch Normalization related variables
+    MU - Use batch mean at training time and running mean at testing time
+    SIGMA - Use batch variance at training time and running variance at testing time
+    Gamma - Scaling (used at training time)
+    Beta - Offset factor (used only at training time)
+    :param tf_inputs:
+    :return:
+    '''
     global CONV_SCOPES,TRAIN_OUTPUT_SHAPES
 
     for si,scope in enumerate(CONV_SCOPES):
@@ -542,6 +553,26 @@ if __name__ == '__main__':
                             pred = sess.run(tf_prediction, feed_dict={tf_test_inputs: test_input / normalize_constant})
 
                             test_full_map[col_no:col_no + height, row_no:row_no + width] = pred[0, :, :, 0]
+
+                    fname = './dynamic_v2_testset.csv'
+                    res = 2
+
+                    toc1 = time.clock()
+                    X_test, Y_test = util2.read_xylabel_csv(fname)
+                    Y_query_predicted = np.array(Y_test.shape)
+                    for ith_query_image in range(X_test.shape[0]):
+                        X_query = util2.point_to_image(X_test[ith_query_image, :], width, height, res)
+                        Y_query_true = Y_test[ith_query_image, :]
+
+                        # Query
+                        pred = sess.run(tf_prediction, feed_dict={tf_test_inputs: X_query / normalize_constant})
+                        print(pred.shape)
+                        print(Y_query_predicted.shape)
+                        Y_query_predicted[ith_query_image] = pred[0, 15, 15, 0]
+
+                    toc2 = time.clock()
+                    util2.calc_scores('DOM_nips17_oct19_thushan_dynamicv2', Y_test, Y_query_predicted, toc2 - toc1,
+                                      time_taken=toc1 - 0)  # tic)
 
                 if exp_type == 'intel':
                     xx, yy = np.meshgrid(np.arange(-35, 35, 0.5), np.arange(-25, 10, 0.5))
