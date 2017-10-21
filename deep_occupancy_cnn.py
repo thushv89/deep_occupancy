@@ -48,8 +48,8 @@ def define_hyperparameters(width,height,exp_type):
 
     CONV_SCOPES = ['conv1', 'conv2', 'conv3', 'conv4', 'conv5', 'conv6', 'deconv3', 'deconv2', 'deconv1']
 
-    conv1kernel_x,conv1kernel_y = 6,3
-    conv2kernel_x, conv2kernel_y = 6,3
+    conv1kernel_x,conv1kernel_y = 3,3
+    conv2kernel_x, conv2kernel_y = 3,3
 
     batch_size = 10
     OUTPUT_TYPE = 'regression'
@@ -407,13 +407,25 @@ def calculate_loss_v2(tf_out,tf_labels):
     if exp_type != 'intel':
         tf_mask = tf_pos_mask * (5.0*(1.0+pos_importance))**2 + tf_neg_mask * (1.0+neg_importance)**2 + \
                   tf_neut_mask * (1.0 + neut_importance)**2
+
+        loss = tf.reduce_mean(
+            tf.reduce_sum(
+                ((tf_out - tf_labels) ** 2) * tf_mask,
+                axis=[1, 2, 3]))
     else:
-        tf_mask = tf_pos_mask * (5.0*(1.0 + pos_importance))**2 + tf_neg_mask * (2.5*(1.0 + neg_importance))**2 + \
-                  tf_neut_mask * (1.0 + neut_importance)**2
-    loss = tf.reduce_mean(
-        tf.reduce_sum(
-            ((tf_out - tf_labels) ** 2) * tf_mask ,
-            axis=[1, 2, 3]))
+        tf_random_mask = tf.cast(tf.greater(tf.random_uniform(minval=-0.01,maxval=0.01,shape=tf_labels.get_shape().as_list()),0.0),dtype=tf.float32)
+        sampled_mask = tf.cast(tf.multinomial(tf.log([[10.,10.,10.]]),1)[0][0],dtype=tf.int32)
+        stacked_masks = tf.stack([tf_pos_mask* (5.0*(1.0 + pos_importance))**2,
+                                  tf_neg_mask* (2.5*(1.0 + neg_importance))**2,
+                                  tf_neut_mask* (1.0 + neut_importance)**2],axis=0)
+
+        tf_mask = stacked_masks[sampled_mask]
+
+        loss = tf.reduce_mean(
+            tf.reduce_sum(
+                ((tf_out - tf_labels) ** 2) * tf_mask * tf_random_mask,
+                axis=[1, 2, 3]))
+
 
     if l2_decay:
         for si, scope in enumerate(CONV_SCOPES):
@@ -569,20 +581,19 @@ if __name__ == '__main__':
 
                     toc1 = time.clock()
                     X_test, Y_test = util2.read_xylabel_csv(fname)
-                    Y_query_predicted = np.array(Y_test.shape)
+                    Y_query_predicted = np.zeros_like(Y_test)
+
                     for ith_query_image in range(X_test.shape[0]):
                         X_query = util2.point_to_image(X_test[ith_query_image, :], width, height, res)
                         Y_query_true = Y_test[ith_query_image, :]
 
                         # Query
                         pred = sess.run(tf_prediction, feed_dict={tf_test_inputs: X_query / normalize_constant})
-                        print(pred.shape)
-                        print(Y_query_predicted.shape)
-                        Y_query_predicted[ith_query_image] = pred[0, 15, 15, 0]
+                        Y_query_predicted[ith_query_image,0] = pred[0, 15, 15, 0]
 
                     toc2 = time.clock()
-                    util2.calc_scores('DOM_nips17_oct19_thushan_dynamicv2', Y_test, Y_query_predicted, toc2 - toc1,
-                                      time_taken=toc1 - 0)  # tic)
+                    util2.calc_scores('DOM_nips17_oct19_thushan_dynamicv2', Y_test, Y_query_predicted, float(toc2 - toc1),
+                                      time_taken=float(toc1 - 0.0))  # tic)
 
                 if exp_type == 'intel':
                     xx, yy = np.meshgrid(np.arange(-35, 35, 0.1), np.arange(-25, 10, 0.1))

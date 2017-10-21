@@ -616,9 +616,9 @@ def neg_ms_log_loss(true_labels, predicted_mean, predicted_var):
 
 
 def calc_scores(mdl_name, true, predicted, test_time=None, time_taken=-11):
-    fn = 'outputs/reports/' + mdl_name + '.csv'
+    fn = mdl_name + '.csv'
 
-    predicted_binarized = np.int_(predicted >= 0.5)
+    predicted_binarized = np.int_(predicted >= 0.0)
     accuracy = np.round(metrics.accuracy_score(true.ravel(), predicted_binarized.ravel()), 3)
 
     auc = np.round(metrics.roc_auc_score(true.ravel(), predicted.ravel()), 3)
@@ -627,11 +627,14 @@ def calc_scores(mdl_name, true, predicted, test_time=None, time_taken=-11):
 
     print(mdl_name + ': accuracy={}, auc={}, nll={}, test_time={}, train_time={}'.format(accuracy, auc, nll, test_time,
                                                                                          time_taken))
+
+    print(accuracy, auc, nll, test_time,time_taken)
     # print(metrics.confusion_matrix(true.ravel(), predicted_binarized.ravel()))
 
-    with open(fn, 'a') as f_handle:
-        np.savetxt(f_handle, np.array([[accuracy, auc, nll, test_time, time_taken]]), delimiter=',', fmt="%.3f")
-
+    f = open(fn, 'ab')
+    np.savetxt(f, np.array([accuracy, auc, nll, test_time, time_taken]).reshape(1,-1).astype(np.float32),
+               delimiter=',', fmt='%.3f')
+    f.close()
 
 def readCsvFile(fileName):
     reader = csv.reader(open(fileName, 'r'))
